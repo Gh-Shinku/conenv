@@ -56,6 +56,42 @@ components:
 	}
 }
 
+func TestRepositoryResolutionPrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	repositoryOne := createTestRepository(t)
+	repositoryTwo := createTestRepository(t)
+
+	if _, err := SaveRepository(repositoryOne); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := ResolveRepository("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Path != repositoryOne || selection.Source != "user config" {
+		t.Fatalf("unexpected user selection: %#v", selection)
+	}
+
+	t.Setenv(RepositoryEnvironment, repositoryTwo)
+	selection, err = ResolveRepository("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Path != repositoryTwo || selection.Source != RepositoryEnvironment {
+		t.Fatalf("unexpected environment selection: %#v", selection)
+	}
+
+	selection, err = ResolveRepository(repositoryOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Path != repositoryOne || selection.Source != "flag" {
+		t.Fatalf("unexpected explicit selection: %#v", selection)
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	root := t.TempDir()
 	manifest := "schemaVersion: conenv/v1\nprofiles: {}\ncomponents: {}\nsurprise: true\n"
@@ -209,4 +245,14 @@ func assertFileContent(t *testing.T, path, expected string) {
 	if string(data) != expected {
 		t.Fatalf("%s: got %q, want %q", path, data, expected)
 	}
+}
+
+func createTestRepository(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	manifest := "schemaVersion: conenv/v1\ndefaultProfile: base\nprofiles:\n  base: {}\ncomponents: {}\n"
+	if err := os.WriteFile(filepath.Join(root, "conenv.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(root)
 }

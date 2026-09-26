@@ -7,14 +7,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"conenv/internal/assets"
 	"conenv/internal/conenv"
 )
 
 var version = "dev"
 
 type commonFlags struct {
+	repo    string
 	root    string
 	profile string
 	json    bool
@@ -38,7 +41,7 @@ func run(args []string) int {
 		if len(extra) != 0 {
 			return fail(errors.New("validate does not accept positional arguments"), 2)
 		}
-		resolved, err := conenv.Load(common.root, common.profile)
+		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -52,7 +55,7 @@ func run(args []string) int {
 		if len(extra) != 0 {
 			return fail(fmt.Errorf("%s does not accept positional arguments", args[0]), 2)
 		}
-		resolved, err := conenv.Load(common.root, common.profile)
+		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -67,7 +70,8 @@ func run(args []string) int {
 		return 0
 	case "apply":
 		fs := flag.NewFlagSet("apply", flag.ContinueOnError)
-		root := fs.String("root", ".", "repository root")
+		repo := fs.String("repo", "", "configuration repository")
+		root := fs.String("root", "", "deprecated alias for --repo")
 		profile := fs.String("profile", "", "profile name")
 		yes := fs.Bool("yes", false, "apply without prompting")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -76,7 +80,8 @@ func run(args []string) int {
 		if fs.NArg() != 0 {
 			return fail(errors.New("apply does not accept positional arguments"), 2)
 		}
-		resolved, err := conenv.Load(*root, *profile)
+		common := commonFlags{repo: *repo, root: *root, profile: *profile}
+		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -108,7 +113,7 @@ func run(args []string) int {
 		if len(extra) != 0 {
 			return fail(errors.New("doctor does not accept positional arguments"), 2)
 		}
-		resolved, err := conenv.Load(common.root, common.profile)
+		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -146,6 +151,55 @@ func run(args []string) int {
 		}
 		fmt.Printf("restored run %s\n", runID)
 		return 0
+	case "use":
+		if len(args) != 2 {
+			return fail(errors.New("usage: conenv use REPOSITORY"), 2)
+		}
+		selection, err := conenv.SaveRepository(args[1])
+		if err != nil {
+			return fail(err, 2)
+		}
+		fmt.Printf("default configuration repository: %s\n", selection.Path)
+		return 0
+	case "config":
+		fs := flag.NewFlagSet("config", flag.ContinueOnError)
+		asJSON := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
+			return fail(errors.New("usage: conenv config [--json]"), 2)
+		}
+		selection, err := conenv.ResolveRepository("")
+		if err != nil {
+			return fail(err, 2)
+		}
+		if *asJSON {
+			_ = writeJSON(selection)
+		} else {
+			configPath, _ := conenv.UserConfigPath()
+			fmt.Printf("repository: %s\nsource: %s\nuser config: %s\n", selection.Path, selection.Source, configPath)
+		}
+		return 0
+	case "schema":
+		fs := flag.NewFlagSet("schema", flag.ContinueOnError)
+		writePath := fs.String("write", "", "write the embedded schema to a file")
+		if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
+			return fail(errors.New("usage: conenv schema [--write FILE]"), 2)
+		}
+		if *writePath == "" {
+			_, _ = os.Stdout.Write(assets.ManifestSchema)
+			return 0
+		}
+		absolute, err := filepath.Abs(*writePath)
+		if err != nil {
+			return fail(err, 1)
+		}
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			return fail(err, 1)
+		}
+		if err := os.WriteFile(absolute, assets.ManifestSchema, 0o644); err != nil {
+			return fail(err, 1)
+		}
+		fmt.Printf("wrote schema to %s\n", absolute)
+		return 0
 	case "version", "--version", "-version":
 		fmt.Println(version)
 		return 0
@@ -181,7 +235,8 @@ func parseRestore(args []string) (string, bool, error) {
 func parseCommon(name string, args []string, jsonFlag bool) (commonFlags, []string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	common := commonFlags{}
-	fs.StringVar(&common.root, "root", ".", "repository root")
+	fs.StringVar(&common.repo, "repo", "", "configuration repository")
+	fs.StringVar(&common.root, "root", "", "deprecated alias for --repo")
 	fs.StringVar(&common.profile, "profile", "", "profile name")
 	if jsonFlag {
 		fs.BoolVar(&common.json, "json", false, "emit JSON")
@@ -190,6 +245,21 @@ func parseCommon(name string, args []string, jsonFlag bool) (commonFlags, []stri
 		return common, nil, err
 	}
 	return common, fs.Args(), nil
+}
+
+func loadResolved(common commonFlags) (*conenv.Resolved, error) {
+	if common.repo != "" && common.root != "" {
+		return nil, errors.New("use only one of --repo and --root")
+	}
+	explicit := common.repo
+	if explicit == "" {
+		explicit = common.root
+	}
+	selection, err := conenv.ResolveRepository(explicit)
+	if err != nil {
+		return nil, err
+	}
+	return conenv.Load(selection.Path, common.profile)
 }
 
 func printPlan(plan *conenv.Plan, asJSON bool) {
@@ -229,11 +299,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `conenv manages a declarative development environment.
 
 Usage:
-  conenv validate [--root DIR] [--profile NAME]
-  conenv plan     [--root DIR] [--profile NAME] [--json]
-  conenv apply    [--root DIR] [--profile NAME] [--yes]
-  conenv status   [--root DIR] [--profile NAME] [--json]
-  conenv doctor   [--root DIR] [--profile NAME] [--json]
+  conenv validate [--repo DIR] [--profile NAME]
+  conenv plan     [--repo DIR] [--profile NAME] [--json]
+  conenv apply    [--repo DIR] [--profile NAME] [--yes]
+  conenv status   [--repo DIR] [--profile NAME] [--json]
+  conenv doctor   [--repo DIR] [--profile NAME] [--json]
   conenv restore  RUN_ID [--yes]
+  conenv use      REPOSITORY
+  conenv config   [--json]
+  conenv schema   [--write FILE]
   conenv version`)
 }

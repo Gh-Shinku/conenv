@@ -1,14 +1,31 @@
 # Configuration guide
 
-The committed `conenv.yaml` is the source of truth for an environment. Conenv reads it, resolves a profile, compares the desired state with the machine, and applies only the required changes.
+The `conenv.yaml` committed to a dedicated configuration repository is the source of truth for an environment. The CLI repository contains only the program, documentation, examples, and embedded schema.
 
-The manifest uses the bundled [JSON Schema](../schema/conenv.v1.schema.json):
+Export the schema into a configuration repository for editor completion:
+
+```powershell
+conenv schema --write C:\path\to\conenv-config\.conenv\conenv.v1.schema.json
+```
+
+Then reference it from the manifest:
 
 ```yaml
-# yaml-language-server: $schema=./schema/conenv.v1.schema.json
+# yaml-language-server: $schema=./.conenv/conenv.v1.schema.json
 schemaVersion: conenv/v1
 defaultProfile: personal
 ```
+
+## Repository selection
+
+Conenv locates the configuration repository in this order:
+
+1. `--repo DIR` on the current command.
+2. The `CONENV_REPO` environment variable.
+3. The default saved by `conenv use REPOSITORY` in `~/.conenv/config.json`.
+4. The current working directory.
+
+Use `conenv config` to inspect the resolved path and its source. The older `--root` flag remains a compatibility alias for `--repo`.
 
 ## Complete example
 
@@ -291,5 +308,8 @@ Restore replaces the managed destinations but does not uninstall packages. Direc
 - `status` detects drift and supports machine-readable JSON.
 - `doctor` runs desired-state and custom health checks.
 - `restore` restores the pre-apply filesystem state for a run.
+- `use` records the default configuration repository for future commands.
+- `config` shows the selected repository and selection source.
+- `schema` prints or writes the JSON Schema embedded in the CLI binary.
 
 `--json` output never includes rendered file contents or resolved secret values.

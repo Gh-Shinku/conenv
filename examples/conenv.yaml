@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=./schema/conenv.v1.schema.json
+# yaml-language-server: $schema=../internal/assets/schema/conenv.v1.schema.json
 schemaVersion: conenv/v1
 defaultProfile: base
 

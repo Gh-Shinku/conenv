@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "conenv/v1 manifest",
+  "title": "Conenv v1 manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "profiles", "components"],
