@@ -56,6 +56,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "category": { "enum": ["program", "ai"] },
+        "description": { "type": "string" },
         "platforms": { "$ref": "#/$defs/stringArray" },
         "architectures": { "$ref": "#/$defs/stringArray" },
         "packages": {

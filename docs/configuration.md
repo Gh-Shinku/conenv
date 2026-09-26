@@ -108,6 +108,20 @@ components:
 
 Supported platform examples are `windows`, `linux`, and `darwin`; architecture examples are `amd64` and `arm64`. A non-matching component is skipped.
 
+Add menu metadata to categorize and explain components during runtime selection:
+
+```yaml
+components:
+  powershell:
+    category: program
+    description: PowerShell profile
+  codex-skills:
+    category: ai
+    description: Shared Codex skills
+```
+
+`category` accepts `program` or `ai`. If omitted, file/package components default to `program` and Codex-only components default to `ai`.
+
 ## Variables and paths
 
 These variables are always available:
@@ -283,6 +297,8 @@ See the official [Codex configuration reference](https://developers.openai.com/c
 ## Planning, drift, and recovery
 
 `conenv plan` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `2` when actions are pending. Applying the same manifest twice is a no-op.
+
+Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive checklist containing the profile's components supported by the current platform. Toggle individual numbers or ranges, press Enter to confirm, and use `a`, `n`, or `q` for all, none, or cancel. The selection affects only that command and does not modify the profile.
 
 Before replacing a destination, conenv stores its current contents under:
 

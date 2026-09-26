@@ -25,6 +25,8 @@ type SecretRef struct {
 }
 
 type Component struct {
+	Category      string        `yaml:"category,omitempty" json:"category,omitempty"`
+	Description   string        `yaml:"description,omitempty" json:"description,omitempty"`
 	Platforms     []string      `yaml:"platforms,omitempty" json:"platforms,omitempty"`
 	Architectures []string      `yaml:"architectures,omitempty" json:"architectures,omitempty"`
 	Packages      []Package     `yaml:"packages,omitempty" json:"packages,omitempty"`

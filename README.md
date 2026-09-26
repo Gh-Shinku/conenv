@@ -23,20 +23,20 @@ Register a configuration repository once, then validate and apply its selected p
 ./conenv.exe config
 ./conenv.exe validate
 ./conenv.exe plan
-./conenv.exe apply
+./conenv.exe apply --select
 ./conenv.exe doctor
 ```
 
-`plan`, `status`, and `doctor` are read-only. `apply` displays its actions and requests confirmation unless `--yes` is supplied.
+`--select` opens a runtime component checklist, so a machine can install only the programs and AI resources it needs. `plan`, `status`, and `doctor` are read-only. `apply` displays its actions and requests confirmation unless `--yes` is supplied.
 
 ## Commands
 
 ```text
 conenv validate [--repo DIR] [--profile NAME]
-conenv plan     [--repo DIR] [--profile NAME] [--json]
-conenv apply    [--repo DIR] [--profile NAME] [--yes]
-conenv status   [--repo DIR] [--profile NAME] [--json]
-conenv doctor   [--repo DIR] [--profile NAME] [--json]
+conenv plan     [--repo DIR] [--profile NAME] [--select] [--json]
+conenv apply    [--repo DIR] [--profile NAME] [--select] [--yes]
+conenv status   [--repo DIR] [--profile NAME] [--select] [--json]
+conenv doctor   [--repo DIR] [--profile NAME] [--select] [--json]
 conenv restore  RUN_ID [--yes]
 conenv use      REPOSITORY
 conenv config   [--json]

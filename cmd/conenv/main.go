@@ -6,8 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"conenv/internal/assets"
@@ -17,11 +19,14 @@ import (
 var version = "dev"
 
 type commonFlags struct {
-	repo    string
-	root    string
-	profile string
-	json    bool
+	repo             string
+	root             string
+	profile          string
+	json             bool
+	selectComponents bool
 }
+
+var errSelectionCancelled = errors.New("component selection cancelled")
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -34,7 +39,7 @@ func run(args []string) int {
 	}
 	switch args[0] {
 	case "validate":
-		common, extra, err := parseCommon("validate", args[1:], false)
+		common, extra, err := parseCommon("validate", args[1:], false, false)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -48,7 +53,7 @@ func run(args []string) int {
 		fmt.Printf("valid profile %q with %d component(s)\n", resolved.Profile, len(resolved.Components))
 		return 0
 	case "plan", "status":
-		common, extra, err := parseCommon(args[0], args[1:], true)
+		common, extra, err := parseCommon(args[0], args[1:], true, true)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -58,6 +63,15 @@ func run(args []string) int {
 		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
+		}
+		if common.selectComponents {
+			output := io.Writer(os.Stdout)
+			if common.json {
+				output = os.Stderr
+			}
+			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
+				return fail(err, 1)
+			}
 		}
 		plan, err := conenv.BuildPlan(resolved)
 		if err != nil {
@@ -74,6 +88,7 @@ func run(args []string) int {
 		root := fs.String("root", "", "deprecated alias for --repo")
 		profile := fs.String("profile", "", "profile name")
 		yes := fs.Bool("yes", false, "apply without prompting")
+		selectComponents := fs.Bool("select", false, "interactively select components")
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
 		}
@@ -84,6 +99,11 @@ func run(args []string) int {
 		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
+		}
+		if *selectComponents {
+			if err := chooseComponents(os.Stdin, os.Stdout, resolved); err != nil {
+				return fail(err, 1)
+			}
 		}
 		plan, err := conenv.BuildPlan(resolved)
 		if err != nil {
@@ -106,7 +126,7 @@ func run(args []string) int {
 		fmt.Printf("applied run %s\n", run.ID)
 		return 0
 	case "doctor":
-		common, extra, err := parseCommon("doctor", args[1:], true)
+		common, extra, err := parseCommon("doctor", args[1:], true, true)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -116,6 +136,15 @@ func run(args []string) int {
 		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
+		}
+		if common.selectComponents {
+			output := io.Writer(os.Stdout)
+			if common.json {
+				output = os.Stderr
+			}
+			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
+				return fail(err, 1)
+			}
 		}
 		results := conenv.Doctor(resolved)
 		unhealthy := false
@@ -232,7 +261,7 @@ func parseRestore(args []string) (string, bool, error) {
 	return runID, yes, nil
 }
 
-func parseCommon(name string, args []string, jsonFlag bool) (commonFlags, []string, error) {
+func parseCommon(name string, args []string, jsonFlag, selectFlag bool) (commonFlags, []string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	common := commonFlags{}
 	fs.StringVar(&common.repo, "repo", "", "configuration repository")
@@ -241,10 +270,163 @@ func parseCommon(name string, args []string, jsonFlag bool) (commonFlags, []stri
 	if jsonFlag {
 		fs.BoolVar(&common.json, "json", false, "emit JSON")
 	}
+	if selectFlag {
+		fs.BoolVar(&common.selectComponents, "select", false, "interactively select components")
+	}
 	if err := fs.Parse(args); err != nil {
 		return common, nil, err
 	}
 	return common, fs.Args(), nil
+}
+
+type componentOption struct {
+	name        string
+	category    string
+	description string
+}
+
+func chooseComponents(input io.Reader, output io.Writer, resolved *conenv.Resolved) error {
+	options := componentOptions(resolved)
+	if len(options) == 0 {
+		return errors.New("the selected profile has no components supported on this platform")
+	}
+	selected := map[string]bool{}
+	reader := bufio.NewReader(input)
+	for {
+		fmt.Fprintf(output, "\nSelect components for profile %q:\n", resolved.Profile)
+		lastCategory := ""
+		for index, option := range options {
+			if option.category != lastCategory {
+				fmt.Fprintf(output, "\n%s\n", strings.ToUpper(option.category))
+				lastCategory = option.category
+			}
+			mark := " "
+			if selected[option.name] {
+				mark = "x"
+			}
+			description := ""
+			if option.description != "" {
+				description = " — " + option.description
+			}
+			fmt.Fprintf(output, "  [%s] %d. %s%s\n", mark, index+1, option.name, description)
+		}
+		fmt.Fprint(output, "\nToggle numbers/ranges (1,3-5), a=all, n=none, Enter=confirm, q=cancel: ")
+		line, err := reader.ReadString('\n')
+		if err != nil && len(line) == 0 {
+			if errors.Is(err, io.EOF) {
+				return errSelectionCancelled
+			}
+			return err
+		}
+		choice := strings.TrimSpace(strings.ToLower(line))
+		switch choice {
+		case "":
+			if len(selected) == 0 {
+				fmt.Fprintln(output, "Select at least one component or enter q to cancel.")
+				continue
+			}
+			filtered := resolved.Components[:0]
+			var names []string
+			for _, component := range resolved.Components {
+				if selected[component.Name] {
+					filtered = append(filtered, component)
+					names = append(names, component.Name)
+				}
+			}
+			resolved.Components = filtered
+			fmt.Fprintf(output, "Selected: %s\n", strings.Join(names, ", "))
+			return nil
+		case "q":
+			return errSelectionCancelled
+		case "a":
+			selectAll := len(selected) != len(options)
+			clear(selected)
+			if selectAll {
+				for _, option := range options {
+					selected[option.name] = true
+				}
+			}
+			continue
+		case "n":
+			clear(selected)
+			continue
+		}
+		indices, err := parseSelection(choice, len(options))
+		if err != nil {
+			fmt.Fprintf(output, "Invalid selection: %v\n", err)
+			continue
+		}
+		for _, index := range indices {
+			name := options[index].name
+			selected[name] = !selected[name]
+			if !selected[name] {
+				delete(selected, name)
+			}
+		}
+	}
+}
+
+func componentOptions(resolved *conenv.Resolved) []componentOption {
+	options := make([]componentOption, 0, len(resolved.Components))
+	for _, category := range []string{"program", "ai"} {
+		for _, component := range resolved.Components {
+			componentCategory := component.Category
+			if componentCategory == "" {
+				componentCategory = "program"
+				if component.Codex != nil && len(component.Files) == 0 && len(component.Packages) == 0 {
+					componentCategory = "ai"
+				}
+			}
+			if componentCategory == category {
+				options = append(options, componentOption{name: component.Name, category: category, description: component.Description})
+			}
+		}
+	}
+	return options
+}
+
+func parseSelection(value string, maximum int) ([]int, error) {
+	seen := map[int]bool{}
+	var indices []int
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, errors.New("empty item")
+		}
+		start, end := 0, 0
+		if strings.Contains(part, "-") {
+			bounds := strings.Split(part, "-")
+			if len(bounds) != 2 {
+				return nil, fmt.Errorf("invalid range %q", part)
+			}
+			var err error
+			start, err = strconv.Atoi(bounds[0])
+			if err != nil {
+				return nil, fmt.Errorf("invalid number %q", bounds[0])
+			}
+			end, err = strconv.Atoi(bounds[1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid number %q", bounds[1])
+			}
+		} else {
+			var err error
+			start, err = strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid number %q", part)
+			}
+			end = start
+		}
+		if start < 1 || end > maximum || start > end {
+			return nil, fmt.Errorf("selection %q is outside 1-%d", part, maximum)
+		}
+		for index := start - 1; index < end; index++ {
+			if !seen[index] {
+				indices = append(indices, index)
+				seen[index] = true
+			}
+		}
+	}
+	return indices, nil
 }
 
 func loadResolved(common commonFlags) (*conenv.Resolved, error) {
@@ -300,10 +482,10 @@ func usage() {
 
 Usage:
   conenv validate [--repo DIR] [--profile NAME]
-  conenv plan     [--repo DIR] [--profile NAME] [--json]
-  conenv apply    [--repo DIR] [--profile NAME] [--yes]
-  conenv status   [--repo DIR] [--profile NAME] [--json]
-  conenv doctor   [--repo DIR] [--profile NAME] [--json]
+  conenv plan     [--repo DIR] [--profile NAME] [--select] [--json]
+  conenv apply    [--repo DIR] [--profile NAME] [--select] [--yes]
+  conenv status   [--repo DIR] [--profile NAME] [--select] [--json]
+  conenv doctor   [--repo DIR] [--profile NAME] [--select] [--json]
   conenv restore  RUN_ID [--yes]
   conenv use      REPOSITORY
   conenv config   [--json]

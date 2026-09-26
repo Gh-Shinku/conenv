@@ -224,6 +224,9 @@ func validateManifest(m *Manifest, root string) error {
 	sort.Strings(componentNames)
 	for _, name := range componentNames {
 		c := m.Components[name]
+		if c.Category != "" && c.Category != "program" && c.Category != "ai" {
+			problems = append(problems, fmt.Sprintf("component %q category must be program or ai", name))
+		}
 		for i, pkg := range c.Packages {
 			if pkg.ID == "" || (pkg.Manager != "winget" && pkg.Manager != "scoop") {
 				problems = append(problems, fmt.Sprintf("component %q package %d requires id and manager winget or scoop", name, i))
