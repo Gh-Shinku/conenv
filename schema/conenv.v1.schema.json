@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "conenv/v1 manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profiles", "components"],
+  "properties": {
+    "schemaVersion": { "const": "conenv/v1" },
+    "defaultProfile": { "type": "string", "minLength": 1 },
+    "variables": { "$ref": "#/$defs/stringMap" },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/secret" }
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    }
+  },
+  "$defs": {
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        { "required": ["env"] },
+        { "required": ["file"] }
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extends": { "$ref": "#/$defs/stringArray" },
+        "components": { "$ref": "#/$defs/stringArray" },
+        "variables": { "$ref": "#/$defs/stringMap" }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platforms": { "$ref": "#/$defs/stringArray" },
+        "architectures": { "$ref": "#/$defs/stringArray" },
+        "packages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/package" }
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/file" }
+        },
+        "codex": { "$ref": "#/$defs/codex" },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/check" }
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager", "id"],
+      "properties": {
+        "name": { "type": "string" },
+        "manager": { "enum": ["winget", "scoop"] },
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "mode"],
+      "properties": {
+        "name": { "type": "string" },
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["link", "render"] },
+        "sensitive": { "type": "boolean" }
+      }
+    },
+    "codex": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": { "type": "object" },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "source"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "source": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "mcpServers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/mcp" }
+        }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["http", "stdio"] },
+        "url": { "type": "string" },
+        "command": { "type": "string" },
+        "args": { "$ref": "#/$defs/stringArray" },
+        "env": { "$ref": "#/$defs/stringMap" },
+        "enabled": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "http" } } },
+          "then": { "required": ["url"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "stdio" } } },
+          "then": { "required": ["command"] }
+        }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["path", "command"] },
+        "path": { "type": "string" },
+        "command": { "type": "string" },
+        "args": { "$ref": "#/$defs/stringArray" }
+      }
+    }
+  }
+}

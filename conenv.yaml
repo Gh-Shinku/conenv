@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=./schema/conenv.v1.schema.json
+schemaVersion: conenv/v1
+defaultProfile: base
+
+profiles:
+  base:
+    components: []
+
+components: {}
