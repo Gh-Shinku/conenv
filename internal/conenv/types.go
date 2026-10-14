@@ -158,6 +158,31 @@ type RunRecord struct {
 	Changes   []BackupRecord    `json:"changes"`
 	Packages  []string          `json:"packages,omitempty"`
 	Resources []ManagedResource `json:"resources,omitempty"`
+	Previous  *StateSnapshot    `json:"previous,omitempty"`
+}
+
+type StateSnapshot struct {
+	ActiveProfile string            `json:"activeProfile,omitempty"`
+	LastRun       string            `json:"lastRun,omitempty"`
+	Managed       []ManagedResource `json:"managed,omitempty"`
+}
+
+type RestoreAction struct {
+	Target string `json:"target"`
+	Action string `json:"action"`
+	Backup string `json:"backup,omitempty"`
+}
+
+type RestorePlan struct {
+	RunID            string          `json:"runId"`
+	Profile          string          `json:"profile"`
+	Actions          []RestoreAction `json:"actions"`
+	PackagesRetained []string        `json:"packagesRetained,omitempty"`
+}
+
+type RestoreRecord struct {
+	RunID      string    `json:"runId"`
+	RestoredAt time.Time `json:"restoredAt"`
 }
 
 type State struct {
@@ -165,4 +190,5 @@ type State struct {
 	LastRun       string            `json:"lastRun,omitempty"`
 	Managed       []ManagedResource `json:"managed,omitempty"`
 	Runs          []RunRecord       `json:"runs,omitempty"`
+	Restores      []RestoreRecord   `json:"restores,omitempty"`
 }

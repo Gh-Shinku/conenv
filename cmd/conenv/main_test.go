@@ -23,6 +23,19 @@ func TestParseSelection(t *testing.T) {
 	}
 }
 
+func TestParseRestoreOptions(t *testing.T) {
+	options, err := parseRestore([]string{"run-1", "--dry-run", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.runID != "run-1" || !options.dryRun || !options.json || options.yes {
+		t.Fatalf("unexpected restore options: %#v", options)
+	}
+	if _, err := parseRestore([]string{"--dry-run"}); err == nil {
+		t.Fatal("expected missing run ID to fail")
+	}
+}
+
 func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
 		{Name: "skills", Component: conenv.Component{Category: "ai", Description: "Shared skills", Codex: &conenv.Codex{}}},

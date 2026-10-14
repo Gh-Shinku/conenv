@@ -27,6 +27,7 @@ type commonFlags struct {
 	selectComponents bool
 	selection        string
 	only             stringList
+	deferRuntime     bool
 }
 
 type stringList []string
@@ -52,9 +53,13 @@ func run(args []string) int {
 		usage()
 		return 2
 	}
+	if len(args) > 1 && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
+		usage()
+		return 0
+	}
 	switch args[0] {
 	case "validate":
-		common, extra, err := parseCommon("validate", args[1:], false, false)
+		common, extra, err := parseCommon("validate", args[1:], true, false)
 		if err != nil {
 			return fail(err, 2)
 		}
@@ -65,7 +70,18 @@ func run(args []string) int {
 		if err != nil {
 			return fail(err, 2)
 		}
-		fmt.Printf("valid profile %q with %d component(s)\n", resolved.Profile, len(resolved.Components))
+		result := validationResult{
+			Valid: true, Repository: resolved.Root, Profile: resolved.Profile,
+			Scope: resolvedComponentNames(resolved), Platform: runtime.GOOS + "/" + runtime.GOARCH,
+			Skipped: resolved.Skipped,
+		}
+		if common.json {
+			if err := writeJSON(result); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			fmt.Printf("valid profile %q with %d component(s)\n", resolved.Profile, len(resolved.Components))
+		}
 		return 0
 	case "plan":
 		common, extra, err := parseCommon("plan", args[1:], true, true)
@@ -95,7 +111,9 @@ func run(args []string) int {
 		if err != nil {
 			return fail(err, 1)
 		}
-		printPlan(plan, common.json)
+		if err := printPlan(plan, common.json); err != nil {
+			return fail(err, 1)
+		}
 		return 0
 	case "status":
 		common, extra, err := parseCommon("status", args[1:], true, true)
@@ -105,6 +123,7 @@ func run(args []string) int {
 		if len(extra) != 0 {
 			return fail(errors.New("status does not accept positional arguments"), 2)
 		}
+		common.deferRuntime = true
 		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
@@ -116,9 +135,6 @@ func run(args []string) int {
 			}
 			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
 				return fail(err, 1)
-			}
-			if err := conenv.ValidateScope(resolved); err != nil {
-				return fail(err, 2)
 			}
 		}
 		report := conenv.InspectStatus(resolved)
@@ -139,6 +155,7 @@ func run(args []string) int {
 		root := fs.String("root", "", "deprecated alias for --repo")
 		profile := fs.String("profile", "", "profile name")
 		yes := fs.Bool("yes", false, "apply without prompting")
+		asJSON := fs.Bool("json", false, "emit JSON")
 		selectComponents := fs.Bool("select", false, "interactively select components")
 		selection := fs.String("selection", "", "load an exact selection from YAML")
 		var only stringList
@@ -159,8 +176,12 @@ func run(args []string) int {
 		}
 		tuiConfirmed := false
 		if common.selectComponents {
-			if canUseTUI(os.Stdin, os.Stdout) {
-				result, err := runComponentTUI(os.Stdin, os.Stdout, resolved, !*yes)
+			selectionOutput := io.Writer(os.Stdout)
+			if *asJSON {
+				selectionOutput = os.Stderr
+			}
+			if canUseTUI(os.Stdin, selectionOutput) {
+				result, err := runComponentTUI(os.Stdin, selectionOutput, resolved, !*yes)
 				if err != nil {
 					return failSelection(err)
 				}
@@ -168,7 +189,7 @@ func run(args []string) int {
 					return failSelection(err)
 				}
 				tuiConfirmed = result.Confirmed && !*yes
-			} else if err := chooseComponentsLineMode(os.Stdin, os.Stdout, resolved); err != nil {
+			} else if err := chooseComponentsLineMode(os.Stdin, selectionOutput, resolved); err != nil {
 				return failSelection(err)
 			}
 			if err := conenv.ValidateScope(resolved); err != nil {
@@ -179,12 +200,26 @@ func run(args []string) int {
 		if err != nil {
 			return fail(err, 1)
 		}
-		printPlan(plan, false)
+		if !*asJSON {
+			if err := printPlan(plan, false); err != nil {
+				return fail(err, 1)
+			}
+		}
 		if len(plan.Actions) == 0 {
+			if *asJSON {
+				if err := writeJSON(applyCommandResult{Plan: plan}); err != nil {
+					return fail(err, 1)
+				}
+			}
 			return 0
 		}
-		if !*yes && !tuiConfirmed && !confirm("Apply these changes? [y/N] ") {
-			return fail(errors.New("apply cancelled"), 1)
+		if !*yes && !tuiConfirmed {
+			if !canPrompt(os.Stdin) {
+				return fail(errors.New("non-interactive apply requires --yes"), 2)
+			}
+			if !confirm("Apply these changes? [y/N] ") {
+				return fail(errors.New("apply cancelled"), 1)
+			}
 		}
 		run, err := conenv.Apply(plan)
 		if err != nil {
@@ -193,7 +228,13 @@ func run(args []string) int {
 			}
 			return fail(err, 1)
 		}
-		fmt.Printf("applied run %s\n", run.ID)
+		if *asJSON {
+			if err := writeJSON(applyCommandResult{Plan: plan, Applied: true, Run: run}); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			fmt.Printf("applied run %s\n", run.ID)
+		}
 		return 0
 	case "doctor":
 		common, extra, err := parseCommon("doctor", args[1:], true, true)
@@ -222,8 +263,21 @@ func run(args []string) int {
 		results := conenv.Doctor(resolved)
 		unhealthy := false
 		if common.json {
-			_ = writeJSON(results)
+			report := doctorReport{
+				Repository: resolved.Root, Profile: resolved.Profile, Scope: resolvedComponentNames(resolved),
+				Platform: runtime.GOOS + "/" + runtime.GOARCH, Skipped: resolved.Skipped, Healthy: true, Checks: results,
+			}
+			for _, result := range results {
+				report.Healthy = report.Healthy && result.Healthy
+			}
+			if err := writeJSON(report); err != nil {
+				return fail(err, 1)
+			}
 		} else {
+			fmt.Printf("repository: %s\nprofile: %s\nplatform: %s\nscope: %s\n", resolved.Root, resolved.Profile, runtime.GOOS+"/"+runtime.GOARCH, strings.Join(resolvedComponentNames(resolved), ", "))
+			if len(resolved.Skipped) > 0 {
+				fmt.Printf("skipped: %s\n", strings.Join(resolved.Skipped, ", "))
+			}
 			for _, result := range results {
 				label := "ok"
 				if !result.Healthy {
@@ -281,45 +335,57 @@ func run(args []string) int {
 		fmt.Printf("wrote selection to %s\n", absolute)
 		return 0
 	case "restore":
-		runID, yes, err := parseRestore(args[1:])
+		options, err := parseRestore(args[1:])
 		if err != nil {
-			return fail(errors.New("usage: conenv restore RUN_ID [--yes]"), 2)
+			return fail(errors.New("usage: conenv restore RUN_ID [--dry-run] [--yes] [--json]"), 2)
 		}
-		if !yes && !confirm("Restore this run and replace current destinations? [y/N] ") {
-			return fail(errors.New("restore cancelled"), 1)
-		}
-		if err := conenv.Restore(runID); err != nil {
+		plan, err := conenv.PlanRestore(options.runID)
+		if err != nil {
 			return fail(err, 1)
 		}
-		fmt.Printf("restored run %s\n", runID)
-		return 0
-	case "use":
-		if len(args) != 2 {
-			return fail(errors.New("usage: conenv use REPOSITORY"), 2)
+		if options.dryRun {
+			if options.json {
+				if err := writeJSON(plan); err != nil {
+					return fail(err, 1)
+				}
+			} else {
+				printRestorePlan(plan)
+			}
+			return 0
 		}
-		selection, err := conenv.SaveRepository(args[1])
-		if err != nil {
-			return fail(err, 2)
+		if !options.yes {
+			if !canPrompt(os.Stdin) {
+				return fail(errors.New("non-interactive restore requires --yes"), 2)
+			}
+			if options.json {
+				printRestorePlanTo(os.Stderr, plan)
+			} else {
+				printRestorePlan(plan)
+			}
+			if !confirm("Restore this run and replace current destinations? [y/N] ") {
+				return fail(errors.New("restore cancelled"), 1)
+			}
 		}
-		fmt.Printf("default configuration repository: %s\n", selection.Path)
-		return 0
-	case "config":
-		fs := flag.NewFlagSet("config", flag.ContinueOnError)
-		asJSON := fs.Bool("json", false, "emit JSON")
-		if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
-			return fail(errors.New("usage: conenv config [--json]"), 2)
+		if err := conenv.Restore(options.runID); err != nil {
+			return fail(err, 1)
 		}
-		selection, err := conenv.ResolveRepository("")
-		if err != nil {
-			return fail(err, 2)
-		}
-		if *asJSON {
-			_ = writeJSON(selection)
+		if options.json {
+			if err := writeJSON(struct {
+				Restored bool                `json:"restored"`
+				Plan     *conenv.RestorePlan `json:"plan"`
+			}{Restored: true, Plan: plan}); err != nil {
+				return fail(err, 1)
+			}
 		} else {
-			configPath, _ := conenv.UserConfigPath()
-			fmt.Printf("repository: %s\nsource: %s\nuser config: %s\n", selection.Path, selection.Source, configPath)
+			fmt.Printf("restored run %s\n", options.runID)
 		}
 		return 0
+	case "repo":
+		return runRepoCommand(args[1:])
+	case "use":
+		return runRepoCommand(append([]string{"use"}, args[1:]...))
+	case "config":
+		return runRepoCommand(append([]string{"show"}, args[1:]...))
 	case "schema":
 		fs := flag.NewFlagSet("schema", flag.ContinueOnError)
 		writePath := fs.String("write", "", "write the embedded schema to a file")
@@ -370,6 +436,79 @@ type componentInfo struct {
 	Architectures []string         `json:"architectures,omitempty"`
 	Supported     bool             `json:"supported"`
 	Declaration   conenv.Component `json:"declaration,omitempty"`
+}
+
+type applyCommandResult struct {
+	Plan    *conenv.Plan      `json:"plan"`
+	Applied bool              `json:"applied"`
+	Run     *conenv.RunRecord `json:"run,omitempty"`
+}
+
+type validationResult struct {
+	Valid      bool     `json:"valid"`
+	Repository string   `json:"repository"`
+	Profile    string   `json:"profile"`
+	Scope      []string `json:"scope"`
+	Platform   string   `json:"platform"`
+	Skipped    []string `json:"skipped,omitempty"`
+}
+
+type doctorReport struct {
+	Repository string               `json:"repository"`
+	Profile    string               `json:"profile"`
+	Scope      []string             `json:"scope"`
+	Platform   string               `json:"platform"`
+	Skipped    []string             `json:"skipped,omitempty"`
+	Healthy    bool                 `json:"healthy"`
+	Checks     []conenv.CheckResult `json:"checks"`
+}
+
+func runRepoCommand(args []string) int {
+	if len(args) == 0 {
+		return fail(errors.New("usage: conenv repo show|use REPOSITORY|unset"), 2)
+	}
+	switch args[0] {
+	case "show":
+		fs := flag.NewFlagSet("repo show", flag.ContinueOnError)
+		asJSON := fs.Bool("json", false, "emit JSON")
+		if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 {
+			return fail(errors.New("usage: conenv repo show [--json]"), 2)
+		}
+		selection, err := conenv.ResolveRepository("")
+		if err != nil {
+			return fail(err, 2)
+		}
+		if *asJSON {
+			if err := writeJSON(selection); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			configPath, _ := conenv.UserConfigPath()
+			fmt.Printf("repository: %s\nsource: %s\nuser config: %s\n", selection.Path, selection.Source, configPath)
+		}
+		return 0
+	case "use":
+		if len(args) != 2 {
+			return fail(errors.New("usage: conenv repo use REPOSITORY"), 2)
+		}
+		selection, err := conenv.SaveRepository(args[1])
+		if err != nil {
+			return fail(err, 2)
+		}
+		fmt.Printf("default configuration repository: %s\n", selection.Path)
+		return 0
+	case "unset":
+		if len(args) != 1 {
+			return fail(errors.New("usage: conenv repo unset"), 2)
+		}
+		if err := conenv.ClearRepository(); err != nil {
+			return fail(err, 1)
+		}
+		fmt.Println("cleared default configuration repository")
+		return 0
+	default:
+		return fail(fmt.Errorf("unknown repo command %q", args[0]), 2)
+	}
 }
 
 func runProfileCommand(args []string) int {
@@ -671,24 +810,34 @@ func printStatus(report conenv.StatusReport) {
 	}
 }
 
-func parseRestore(args []string) (string, bool, error) {
-	var runID string
-	yes := false
+type restoreOptions struct {
+	runID  string
+	yes    bool
+	dryRun bool
+	json   bool
+}
+
+func parseRestore(args []string) (restoreOptions, error) {
+	options := restoreOptions{}
 	for _, arg := range args {
 		switch arg {
 		case "--yes":
-			yes = true
+			options.yes = true
+		case "--dry-run":
+			options.dryRun = true
+		case "--json":
+			options.json = true
 		default:
-			if strings.HasPrefix(arg, "-") || runID != "" {
-				return "", false, errors.New("invalid restore arguments")
+			if strings.HasPrefix(arg, "-") || options.runID != "" {
+				return restoreOptions{}, errors.New("invalid restore arguments")
 			}
-			runID = arg
+			options.runID = arg
 		}
 	}
-	if runID == "" {
-		return "", false, errors.New("run ID is required")
+	if options.runID == "" {
+		return restoreOptions{}, errors.New("run ID is required")
 	}
-	return runID, yes, nil
+	return options, nil
 }
 
 func parseCommon(name string, args []string, jsonFlag, selectFlag bool) (commonFlags, []string, error) {
@@ -772,16 +921,18 @@ func loadResolved(common commonFlags) (*conenv.Resolved, error) {
 	if common.selectComponents {
 		return resolved, nil
 	}
+	if common.deferRuntime {
+		return resolved, nil
+	}
 	if spec != nil {
 		return resolved, conenv.ValidateScope(resolved)
 	}
 	return resolved, conenv.ValidateResolved(resolved)
 }
 
-func printPlan(plan *conenv.Plan, asJSON bool) {
+func printPlan(plan *conenv.Plan, asJSON bool) error {
 	if asJSON {
-		_ = writeJSON(plan)
-		return
+		return writeJSON(plan)
 	}
 	fmt.Printf("repository: %s\nprofile: %s\nplatform: %s\nscope: %s\n", plan.Repository, plan.Profile, plan.Platform, strings.Join(plan.Scope, ", "))
 	if len(plan.Skipped) > 0 {
@@ -789,12 +940,13 @@ func printPlan(plan *conenv.Plan, asJSON bool) {
 	}
 	if len(plan.Actions) == 0 {
 		fmt.Println("environment is in sync")
-		return
+		return nil
 	}
 	fmt.Printf("actions: %d\n", len(plan.Actions))
 	for _, action := range plan.Actions {
 		fmt.Printf("- [%s] %s\n", action.Kind, action.Summary)
 	}
+	return nil
 }
 
 func writeJSON(value any) error {
@@ -804,10 +956,24 @@ func writeJSON(value any) error {
 }
 
 func confirm(prompt string) bool {
-	fmt.Print(prompt)
+	fmt.Fprint(os.Stderr, prompt)
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	return line == "y" || line == "yes"
+}
+
+func printRestorePlan(plan *conenv.RestorePlan) {
+	printRestorePlanTo(os.Stdout, plan)
+}
+
+func printRestorePlanTo(output io.Writer, plan *conenv.RestorePlan) {
+	fmt.Fprintf(output, "run: %s\nprofile: %s\n", plan.RunID, plan.Profile)
+	for _, action := range plan.Actions {
+		fmt.Fprintf(output, "- [%s] %s\n", action.Action, action.Target)
+	}
+	if len(plan.PackagesRetained) > 0 {
+		fmt.Fprintf(output, "packages retained: %s\n", strings.Join(plan.PackagesRetained, ", "))
+	}
 }
 
 func fail(err error, code int) int {
@@ -819,16 +985,17 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `conenv manages a declarative development environment.
 
 Usage:
-  conenv validate [--repo DIR] [--profile NAME]
+  conenv validate [--repo DIR] [--profile NAME] [--json]
   conenv plan     [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
-  conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes]
+  conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes] [--json]
   conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
   conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
   conenv select   --write FILE [--repo DIR] [--profile NAME]
   conenv profile  list|show NAME [--repo DIR] [--json]
   conenv component list|show NAME [--repo DIR] [--json]
   conenv history  list|show RUN_ID [--json]
-  conenv restore  RUN_ID [--yes]
+  conenv restore  RUN_ID [--dry-run] [--yes] [--json]
+  conenv repo     show|use REPOSITORY|unset
   conenv use      REPOSITORY
   conenv config   [--json]
   conenv schema   [--write FILE]

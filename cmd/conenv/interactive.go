@@ -141,6 +141,11 @@ func canUseTUI(input io.Reader, output io.Writer) bool {
 	return inputOK && outputOK && term.IsTerminal(in.Fd()) && term.IsTerminal(out.Fd())
 }
 
+func canPrompt(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	return ok && term.IsTerminal(file.Fd())
+}
+
 // runComponentTUI is the adapter between conenv's domain model and the
 // presentation-only models exposed by internal/tui.
 func runComponentTUI(input io.Reader, output io.Writer, resolved *conenv.Resolved, preview bool) (tui.Result, error) {

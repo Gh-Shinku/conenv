@@ -19,8 +19,8 @@ Windows links require Developer Mode or permission to create symbolic links.
 Register a configuration repository once, then validate and apply its selected profile:
 
 ```powershell
-./conenv.exe use C:\path\to\conenv-config
-./conenv.exe config
+./conenv.exe repo use C:\path\to\conenv-config
+./conenv.exe repo show
 ./conenv.exe validate
 ./conenv.exe plan
 ./conenv.exe apply --select
@@ -33,16 +33,17 @@ Register a configuration repository once, then validate and apply its selected p
 ## Commands
 
 ```text
-conenv validate [--repo DIR] [--profile NAME]
+conenv validate [--repo DIR] [--profile NAME] [--json]
 conenv plan     [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
-conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes]
+conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes] [--json]
 conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
 conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
 conenv select   --write FILE [--repo DIR] [--profile NAME]
 conenv profile  list|show NAME [--repo DIR] [--json]
 conenv component list|show NAME [--repo DIR] [--json]
 conenv history  list|show RUN_ID [--json]
-conenv restore  RUN_ID [--yes]
+conenv restore  RUN_ID [--dry-run] [--yes] [--json]
+conenv repo     show|use REPOSITORY|unset
 conenv use      REPOSITORY
 conenv config   [--json]
 conenv schema   [--write FILE]
@@ -50,6 +51,8 @@ conenv version
 ```
 
 Exit status `0` means success, `1` means an operational failure, `2` means invalid input or configuration, and `3` means a completed status or health inspection found drift or an unhealthy check.
+
+`repo show`, `repo use`, and `repo unset` manage the default configuration repository; `config` and `use` remain compatibility aliases. Commands that can emit JSON keep result data on stdout and diagnostics on stderr. Non-interactive `apply` and `restore` require `--yes` when they would otherwise prompt.
 
 ## Documentation
 

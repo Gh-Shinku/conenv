@@ -63,6 +63,18 @@ func SaveRepository(path string) (RepositorySelection, error) {
 	return RepositorySelection{Path: validated, Source: "user config"}, nil
 }
 
+func ClearRepository() error {
+	configPath, err := userConfigPath()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(userConfig{}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(configPath, append(data, '\n'), 0o600)
+}
+
 func UserConfigPath() (string, error) {
 	return userConfigPath()
 }

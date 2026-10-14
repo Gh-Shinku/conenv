@@ -22,10 +22,10 @@ Conenv locates the configuration repository in this order:
 
 1. `--repo DIR` on the current command.
 2. The `CONENV_REPO` environment variable.
-3. The default saved by `conenv use REPOSITORY` in `~/.conenv/config.json`.
+3. The default saved by `conenv repo use REPOSITORY` in `~/.conenv/config.json`.
 4. The current working directory.
 
-Use `conenv config` to inspect the resolved path and its source. The older `--root` flag remains a compatibility alias for `--repo`.
+Use `conenv repo show` to inspect the resolved path and its source, `conenv repo use REPOSITORY` to save a default, and `conenv repo unset` to clear it. The older `conenv config`, `conenv use`, and `--root` forms remain compatibility aliases.
 
 ## Complete example
 
@@ -335,6 +335,8 @@ conenv restore RUN_ID
 
 Restore replaces the managed destinations but does not uninstall packages. Direct edits to managed destinations are treated as drift; edit the repository source instead. Conenv does not perform two-way synchronization.
 
+Preview the exact reverse-order file operations with `conenv restore RUN_ID --dry-run`; add `--json` for automation. New apply records include the previous managed-state snapshot, allowing a restore to reinstate state metadata as well as files. Successfully installed packages are listed but retained. Non-interactive restore requires `--yes` unless it is a dry run.
+
 ## Command behavior
 
 - `validate` checks schema fields, inheritance, sources, secrets, skills, MCP declarations, checks, and destination ownership.
@@ -342,11 +344,11 @@ Restore replaces the managed destinations but does not uninstall packages. Direc
 - `apply` installs packages, backs up conflicts, and commits filesystem changes.
 - `status` reports each selected component as `in_sync`, `drifted`, or `error` and supports machine-readable JSON. Drift exits with status `3`.
 - `doctor` runs desired-state and custom health checks.
-- `restore` restores the pre-apply filesystem state for a run.
-- `use` records the default configuration repository for future commands.
-- `config` shows the selected repository and selection source.
+- `restore` previews or restores the pre-apply filesystem and recorded managed state for a run.
+- `repo use|show|unset` manages the default configuration repository; `use` and `config` are compatibility aliases.
 - `schema` prints or writes the JSON Schema embedded in the CLI binary.
 - `profile list|show` and `component list|show` expose manifest inventory without requiring runtime prerequisites.
 - `history list|show` discovers and inspects recorded apply runs.
 
 `--json` output never includes rendered file contents or resolved secret values.
+When JSON is requested, stdout contains only the result document; diagnostics and prompts use stderr. In non-interactive environments, `apply` and mutating `restore` fail immediately unless `--yes` is supplied.

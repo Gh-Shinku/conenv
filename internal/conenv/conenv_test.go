@@ -91,6 +91,16 @@ func TestRepositoryResolutionPrecedence(t *testing.T) {
 	if selection.Path != repositoryOne || selection.Source != "flag" {
 		t.Fatalf("unexpected explicit selection: %#v", selection)
 	}
+	if err := ClearRepository(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadUserConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Repository != "" {
+		t.Fatalf("repository was not cleared: %#v", config)
+	}
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
@@ -178,14 +188,33 @@ func TestApplyAndRestoreRenderedFile(t *testing.T) {
 	secondPlan := &Plan{Profile: "test", Actions: []Action{{
 		Kind: "render", Component: "test", Target: target, Content: []byte("newer"), Summary: "render test again",
 	}}}
-	if _, err := Apply(secondPlan); err != nil {
+	secondRun, err := Apply(secondPlan)
+	if err != nil {
 		t.Fatalf("second apply should update existing state: %v", err)
 	}
 	assertFileContent(t, target, "newer")
+	if err := Restore(secondRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, target, "new")
+	restorePlan, err := PlanRestore(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restorePlan.Actions) != 1 || restorePlan.Actions[0].Action != "restore" || restorePlan.Actions[0].Target != target {
+		t.Fatalf("unexpected restore plan: %#v", restorePlan)
+	}
 	if err := Restore(run.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertFileContent(t, target, "old")
+	state, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LastRun != "" || len(state.Restores) != 2 || state.Restores[1].RunID != run.ID {
+		t.Fatalf("restore did not update state: %#v", state)
+	}
 }
 
 func TestBuildPlanIsIdempotentAndRedactsContent(t *testing.T) {
@@ -244,10 +273,11 @@ func TestInspectStatusReportsEachComponent(t *testing.T) {
 		Components: []NamedComponent{
 			{Name: "ready", Component: Component{Files: []ManagedFile{{Source: source, Target: inSyncTarget, Mode: "render"}}}},
 			{Name: "drifted", Component: Component{Files: []ManagedFile{{Source: source, Target: filepath.Join(home, "missing"), Mode: "render"}}}},
+			{Name: "broken", Component: Component{Files: []ManagedFile{{Source: filepath.Join(root, "absent"), Target: filepath.Join(home, "broken"), Mode: "render"}}}},
 		},
 	}
 	report := InspectStatus(resolved)
-	if report.InSync || len(report.Components) != 2 || report.Components[0].State != "in_sync" || report.Components[1].State != "drifted" || report.Components[1].Pending != 1 {
+	if report.InSync || len(report.Components) != 3 || report.Components[0].State != "in_sync" || report.Components[1].State != "drifted" || report.Components[1].Pending != 1 || report.Components[2].State != "error" {
 		t.Fatalf("unexpected status report: %#v", report)
 	}
 }

@@ -18,7 +18,15 @@ func Apply(plan *Plan) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	run := RunRecord{ID: time.Now().UTC().Format("20060102T150405.000000000Z"), Profile: plan.Profile, CreatedAt: time.Now().UTC(), Resources: plan.Resources}
+	state, err := LoadState()
+	if err != nil {
+		return nil, err
+	}
+	run := RunRecord{
+		ID: time.Now().UTC().Format("20060102T150405.000000000Z"), Profile: plan.Profile,
+		CreatedAt: time.Now().UTC(), Resources: plan.Resources,
+		Previous: &StateSnapshot{ActiveProfile: state.ActiveProfile, LastRun: state.LastRun, Managed: append([]ManagedResource(nil), state.Managed...)},
+	}
 	backupRoot := filepath.Join(home, ".conenv", "backups", run.ID)
 
 	for _, action := range plan.Actions {
@@ -97,15 +105,82 @@ func Restore(runID string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".conenv", "backups", runID, "run.json"))
+	run, err := loadRun(home, runID)
 	if err != nil {
 		return err
 	}
-	var run RunRecord
-	if err := json.Unmarshal(data, &run); err != nil {
+	if err := validateRestoreBackups(run); err != nil {
 		return err
 	}
-	return rollback(run.Changes)
+	if err := rollback(run.Changes); err != nil {
+		return err
+	}
+	state, err := LoadState()
+	if err != nil {
+		return err
+	}
+	if run.Previous != nil && state.LastRun == run.ID {
+		state.ActiveProfile = run.Previous.ActiveProfile
+		state.LastRun = run.Previous.LastRun
+		state.Managed = append([]ManagedResource(nil), run.Previous.Managed...)
+	} else if run.Previous != nil {
+		state.Managed = restoreManagedSubset(state.Managed, run.Resources, run.Previous.Managed)
+	} else {
+		state.Managed = removeManaged(state.Managed, run.Resources)
+		if state.LastRun == run.ID {
+			state.LastRun = ""
+		}
+	}
+	state.Restores = append(state.Restores, RestoreRecord{RunID: run.ID, RestoredAt: time.Now().UTC()})
+	return saveState(home, state)
+}
+
+func PlanRestore(runID string) (*RestorePlan, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	run, err := loadRun(home, runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRestoreBackups(run); err != nil {
+		return nil, err
+	}
+	plan := &RestorePlan{RunID: run.ID, Profile: run.Profile, PackagesRetained: append([]string(nil), run.Packages...)}
+	for index := len(run.Changes) - 1; index >= 0; index-- {
+		record := run.Changes[index]
+		action := RestoreAction{Target: record.Target, Action: "remove"}
+		if record.Existed {
+			action.Action = "restore"
+			action.Backup = record.Backup
+		}
+		plan.Actions = append(plan.Actions, action)
+	}
+	return plan, nil
+}
+
+func validateRestoreBackups(run RunRecord) error {
+	for _, record := range run.Changes {
+		if record.Existed {
+			if _, err := os.Lstat(record.Backup); err != nil {
+				return fmt.Errorf("restore backup for %s: %w", record.Target, err)
+			}
+		}
+	}
+	return nil
+}
+
+func loadRun(home, runID string) (RunRecord, error) {
+	data, err := os.ReadFile(filepath.Join(home, ".conenv", "backups", runID, "run.json"))
+	if err != nil {
+		return RunRecord{}, err
+	}
+	var run RunRecord
+	if err := json.Unmarshal(data, &run); err != nil {
+		return RunRecord{}, err
+	}
+	return run, nil
 }
 
 func rollback(records []BackupRecord) error {
@@ -150,11 +225,44 @@ func saveRun(home string, run RunRecord) error {
 	if len(state.Runs) > 50 {
 		state.Runs = state.Runs[len(state.Runs)-50:]
 	}
+	return saveState(home, state)
+}
+
+func saveState(home string, state State) error {
 	stateData, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
+	statePath := filepath.Join(home, ".conenv", "state.json")
 	return atomicWrite(statePath, append(stateData, '\n'), 0o600)
+}
+
+func removeManaged(current, removed []ManagedResource) []ManagedResource {
+	targets := make(map[string]bool, len(removed))
+	for _, resource := range removed {
+		targets[resource.Kind+"\x00"+resource.Target] = true
+	}
+	filtered := make([]ManagedResource, 0, len(current))
+	for _, resource := range current {
+		if !targets[resource.Kind+"\x00"+resource.Target] {
+			filtered = append(filtered, resource)
+		}
+	}
+	return filtered
+}
+
+func restoreManagedSubset(current, removed, previous []ManagedResource) []ManagedResource {
+	filtered := removeManaged(current, removed)
+	affected := make(map[string]bool, len(removed))
+	for _, resource := range removed {
+		affected[resource.Kind+"\x00"+resource.Target] = true
+	}
+	for _, resource := range previous {
+		if affected[resource.Kind+"\x00"+resource.Target] {
+			filtered = append(filtered, resource)
+		}
+	}
+	return filtered
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

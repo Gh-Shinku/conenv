@@ -15,16 +15,22 @@ func InspectStatus(resolved *Resolved) StatusReport {
 	for _, component := range resolved.Components {
 		scoped := *resolved
 		scoped.Components = []NamedComponent{component}
-		plan, err := BuildPlan(&scoped)
 		status := ComponentStatus{Name: component.Name, State: "in_sync"}
-		if err != nil {
+		if err := ValidateScope(&scoped); err != nil {
 			status.State = "error"
 			status.Error = err.Error()
 			report.InSync = false
-		} else if len(plan.Actions) > 0 {
-			status.State = "drifted"
-			status.Pending = len(plan.Actions)
-			report.InSync = false
+		} else {
+			plan, err := BuildPlan(&scoped)
+			if err != nil {
+				status.State = "error"
+				status.Error = err.Error()
+				report.InSync = false
+			} else if len(plan.Actions) > 0 {
+				status.State = "drifted"
+				status.Pending = len(plan.Actions)
+				report.InSync = false
+			}
 		}
 		report.Components = append(report.Components, status)
 	}
