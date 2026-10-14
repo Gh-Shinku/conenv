@@ -1,9 +1,28 @@
-# yaml-language-server: $schema=../internal/assets/schema/conenv.v1.schema.json
-schemaVersion: conenv/v1
+# yaml-language-server: $schema=../internal/assets/schema/conenv.v2.schema.json
+schemaVersion: conenv/v2
 defaultProfile: base
 
 profiles:
   base:
-    components: []
+    components: [vim, ai-agents]
 
-components: {}
+components:
+  vim:
+    category: program
+    description: Vim editor configuration
+    files:
+      - source: programs/vim/.vimrc
+        target: '{{ .home }}/.vimrc'
+        mode: link
+
+  # The key under components is the component name; the key under agents is the
+  # agent name, and harness selects which adapter writes it.
+  ai-agents:
+    category: ai
+    description: Shared agent skills
+    agents:
+      codex:
+        harness: codex
+        skills:
+          - name: release-notes
+            source: ai/skills/release-notes

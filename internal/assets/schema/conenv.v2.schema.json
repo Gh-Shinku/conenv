@@ -1,20 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Conenv v1 manifest",
+  "$id": "https://conenv.dev/schema/conenv.v2.schema.json",
+  "title": "conenv manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "profiles", "components"],
   "properties": {
-    "schemaVersion": { "const": "conenv/v1" },
-    "defaultProfile": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "const": "conenv/v2" },
+    "defaultProfile": { "type": "string" },
     "variables": { "$ref": "#/$defs/stringMap" },
     "secrets": {
       "type": "object",
-      "additionalProperties": { "$ref": "#/$defs/secret" }
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "env": { "type": "string" },
+          "file": { "type": "string" }
+        },
+        "oneOf": [
+          { "required": ["env"] },
+          { "required": ["file"] }
+        ]
+      }
     },
     "profiles": {
       "type": "object",
-      "minProperties": 1,
       "additionalProperties": { "$ref": "#/$defs/profile" }
     },
     "components": {
@@ -23,25 +34,13 @@
     }
   },
   "$defs": {
-    "stringMap": {
-      "type": "object",
-      "additionalProperties": { "type": "string" }
-    },
     "stringArray": {
       "type": "array",
       "items": { "type": "string" }
     },
-    "secret": {
+    "stringMap": {
       "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "env": { "type": "string", "minLength": 1 },
-        "file": { "type": "string", "minLength": 1 }
-      },
-      "oneOf": [
-        { "required": ["env"] },
-        { "required": ["file"] }
-      ]
+      "additionalProperties": { "type": "string" }
     },
     "profile": {
       "type": "object",
@@ -68,10 +67,54 @@
           "type": "array",
           "items": { "$ref": "#/$defs/file" }
         },
-        "codex": { "$ref": "#/$defs/codex" },
+        "agents": {
+          "type": "object",
+          "description": "Harness targets this component contributes to, keyed by agent name.",
+          "additionalProperties": { "$ref": "#/$defs/agent" }
+        },
         "checks": {
           "type": "array",
           "items": { "$ref": "#/$defs/check" }
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness"],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registered harness adapter, for example codex."
+        },
+        "configPath": {
+          "type": "string",
+          "description": "Optional override; defaults to the harness global configuration file."
+        },
+        "skillsDir": {
+          "type": "string",
+          "description": "Optional override; defaults to the shared global skills directory."
+        },
+        "config": {
+          "type": "object",
+          "description": "Settings merged into the harness configuration file. Only keys the adapter manages are accepted."
+        },
+        "mcpServers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/mcp" }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "source"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "source": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     },
@@ -96,29 +139,6 @@
         "target": { "type": "string", "minLength": 1 },
         "mode": { "enum": ["link", "render"] },
         "sensitive": { "type": "boolean" }
-      }
-    },
-    "codex": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "config": { "type": "object" },
-        "skills": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "source"],
-            "properties": {
-              "name": { "type": "string", "minLength": 1 },
-              "source": { "type": "string", "minLength": 1 }
-            }
-          }
-        },
-        "mcpServers": {
-          "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/mcp" }
-        }
       }
     },
     "mcp": {
