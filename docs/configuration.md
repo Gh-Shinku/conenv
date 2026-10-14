@@ -302,6 +302,21 @@ See the official [Codex configuration reference](https://developers.openai.com/c
 
 Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; individual Codex skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation. The selection affects only that command and does not modify the profile.
 
+Export the same selection to a stable, agent-friendly file with `conenv select --write selection.yaml`, then replay it with `--selection selection.yaml`:
+
+```yaml
+schemaVersion: conenv/selection/v1
+profile: personal
+components:
+  git:
+    resources: true
+  codex:
+    skills:
+      - release-notes
+```
+
+The file is an explicit allowlist: omitted components and newly added resources are not selected. `resources` covers packages, files, checks, Codex configuration, and MCP servers declared directly by the component; `skills` selects individual Codex skills. Unknown profiles, components, skills, fields, and duplicate skills are errors. For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, or `COMPONENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
+
 Before replacing a destination, conenv stores its current contents under:
 
 ```text

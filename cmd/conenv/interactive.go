@@ -31,9 +31,9 @@ const (
 )
 
 type selectionTarget struct {
-	componentIndex int
-	kind           selectionTargetKind
-	skillIndex     int
+	component string
+	kind      selectionTargetKind
+	skill     string
 }
 
 type selectionCatalog struct {
@@ -50,8 +50,7 @@ func chooseComponents(input io.Reader, output io.Writer, resolved *conenv.Resolv
 			}
 			return err
 		}
-		filterComponents(resolved, result.SelectedIDs)
-		return nil
+		return filterComponents(resolved, result.SelectedIDs)
 	}
 	return chooseComponentsLineMode(input, output, resolved)
 }
@@ -106,7 +105,9 @@ func chooseComponentsLineMode(input io.Reader, output io.Writer, resolved *conen
 				fmt.Fprintln(output, "Select at least one item or enter q to cancel.")
 				continue
 			}
-			filterComponents(resolved, tree.SelectedIDs())
+			if err := filterComponents(resolved, tree.SelectedIDs()); err != nil {
+				return err
+			}
 			fmt.Fprintf(output, "Selected: %s\n", strings.Join(selectedTitles(tree), ", "))
 			return nil
 		case "q":
@@ -152,7 +153,10 @@ func runComponentTUI(input io.Reader, output io.Writer, resolved *conenv.Resolve
 	}
 	if preview {
 		config.BuildPlan = func(selectedIDs []string) (tui.Plan, error) {
-			selected := filteredResolved(resolved, selectedIDs)
+			selected, err := filteredResolved(resolved, selectedIDs)
+			if err != nil {
+				return tui.Plan{}, err
+			}
 			plan, err := conenv.BuildPlan(selected)
 			if err != nil {
 				return tui.Plan{}, err
@@ -175,73 +179,41 @@ func presentPlan(plan *conenv.Plan) tui.Plan {
 	return presented
 }
 
-func filteredResolved(resolved *conenv.Resolved, selectedIDs []string) *conenv.Resolved {
+func selectionFromIDs(resolved *conenv.Resolved, selectedIDs []string) (*conenv.SelectionSpec, error) {
 	catalog := newSelectionCatalog(resolved)
-	copyResolved := *resolved
-	type componentSelection struct {
-		whole  bool
-		base   bool
-		skills map[int]bool
-	}
-	selected := make(map[int]*componentSelection)
+	targets := make([]string, 0, len(selectedIDs))
 	for _, id := range selectedIDs {
 		target, ok := catalog.targets[id]
 		if !ok {
-			continue
-		}
-		selection := selected[target.componentIndex]
-		if selection == nil {
-			selection = &componentSelection{skills: map[int]bool{}}
-			selected[target.componentIndex] = selection
+			return nil, fmt.Errorf("unknown TUI selection ID %q", id)
 		}
 		switch target.kind {
 		case selectComponent:
-			selection.whole = true
+			targets = append(targets, target.component)
 		case selectComponentResources:
-			selection.base = true
+			targets = append(targets, target.component+"/resources")
 		case selectSkill:
-			selection.skills[target.skillIndex] = true
+			targets = append(targets, target.component+"/skills/"+target.skill)
 		}
 	}
-	copyResolved.Components = make([]conenv.NamedComponent, 0, len(resolved.Components))
-	for componentIndex, component := range resolved.Components {
-		selection := selected[componentIndex]
-		if selection == nil {
-			continue
-		}
-		if selection.whole {
-			copyResolved.Components = append(copyResolved.Components, component)
-			continue
-		}
-		filtered := component
-		if !selection.base {
-			filtered.Packages = nil
-			filtered.Files = nil
-			filtered.Checks = nil
-		}
-		if component.Codex != nil {
-			codex := *component.Codex
-			codex.Skills = make([]conenv.Skill, 0, len(selection.skills))
-			for skillIndex, skill := range component.Codex.Skills {
-				if selection.skills[skillIndex] {
-					codex.Skills = append(codex.Skills, skill)
-				}
-			}
-			if !selection.base {
-				codex.Config = nil
-				codex.MCPServers = nil
-			}
-			filtered.Codex = &codex
-		}
-		if selection.base || (filtered.Codex != nil && len(filtered.Codex.Skills) > 0) {
-			copyResolved.Components = append(copyResolved.Components, filtered)
-		}
-	}
-	return &copyResolved
+	return conenv.SelectionFromTargets(resolved, targets)
 }
 
-func filterComponents(resolved *conenv.Resolved, selectedIDs []string) {
-	resolved.Components = filteredResolved(resolved, selectedIDs).Components
+func filteredResolved(resolved *conenv.Resolved, selectedIDs []string) (*conenv.Resolved, error) {
+	spec, err := selectionFromIDs(resolved, selectedIDs)
+	if err != nil {
+		return nil, err
+	}
+	return conenv.ApplySelection(resolved, spec)
+}
+
+func filterComponents(resolved *conenv.Resolved, selectedIDs []string) error {
+	filtered, err := filteredResolved(resolved, selectedIDs)
+	if err != nil {
+		return err
+	}
+	resolved.Components = filtered.Components
+	return nil
 }
 
 func failSelection(err error) int {
@@ -274,7 +246,7 @@ func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
 	catalog := selectionCatalog{targets: make(map[string]selectionTarget)}
 	for _, option := range componentOptions(resolved) {
 		component := resolved.Components[option.componentIndex]
-		rootID := fmt.Sprintf("component:%d", option.componentIndex)
+		rootID := "component:" + component.Name
 		skills := []conenv.Skill(nil)
 		if component.Codex != nil {
 			skills = component.Codex.Skills
@@ -283,7 +255,7 @@ func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
 			ID: rootID, Title: option.name, Category: option.category, Description: option.description,
 		})
 		if len(skills) == 0 {
-			catalog.targets[rootID] = selectionTarget{componentIndex: option.componentIndex, kind: selectComponent}
+			catalog.targets[rootID] = selectionTarget{component: component.Name, kind: selectComponent}
 			continue
 		}
 		if hasComponentResources(component.Component) {
@@ -291,24 +263,21 @@ func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
 			catalog.items = append(catalog.items, tui.Item{
 				ID: baseID, ParentID: rootID, Title: "Component resources", Description: "Packages, files, configuration, and checks",
 			})
-			catalog.targets[baseID] = selectionTarget{componentIndex: option.componentIndex, kind: selectComponentResources}
+			catalog.targets[baseID] = selectionTarget{component: component.Name, kind: selectComponentResources}
 		}
-		for skillIndex, skill := range skills {
-			skillID := fmt.Sprintf("%s:skill:%d", rootID, skillIndex)
+		for _, skill := range skills {
+			skillID := fmt.Sprintf("%s:skill:%s", rootID, skill.Name)
 			catalog.items = append(catalog.items, tui.Item{
 				ID: skillID, ParentID: rootID, Title: skill.Name, Description: "Codex skill",
 			})
-			catalog.targets[skillID] = selectionTarget{componentIndex: option.componentIndex, kind: selectSkill, skillIndex: skillIndex}
+			catalog.targets[skillID] = selectionTarget{component: component.Name, kind: selectSkill, skill: skill.Name}
 		}
 	}
 	return catalog
 }
 
 func hasComponentResources(component conenv.Component) bool {
-	if len(component.Packages) > 0 || len(component.Files) > 0 || len(component.Checks) > 0 {
-		return true
-	}
-	return component.Codex != nil && (len(component.Codex.Config) > 0 || len(component.Codex.MCPServers) > 0)
+	return conenv.HasComponentResources(component)
 }
 
 func selectedTitles(tree *tui.Tree) []string {

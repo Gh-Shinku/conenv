@@ -15,6 +15,18 @@ import (
 )
 
 func Load(root, profile string) (*Resolved, error) {
+	resolved, err := LoadProfile(root, profile)
+	if err != nil {
+		return nil, err
+	}
+	return resolved, ValidateResolved(resolved)
+}
+
+// LoadProfile parses and resolves a profile without checking runtime
+// prerequisites such as source files and secret availability. Callers that
+// narrow the profile first can apply their selection and then call
+// ValidateScope, so resources outside the requested scope cannot block them.
+func LoadProfile(root, profile string) (*Resolved, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -105,7 +117,7 @@ func Load(root, profile string) (*Resolved, error) {
 			resolved.Components = append(resolved.Components, NamedComponent{Name: name, Component: component})
 		}
 	}
-	return resolved, validateResolved(resolved)
+	return resolved, nil
 }
 
 func decodeManifest(path string, required bool) (*Manifest, error) {
@@ -271,7 +283,7 @@ func validateManifest(m *Manifest, root string) error {
 	return nil
 }
 
-func validateResolved(r *Resolved) error {
+func ValidateResolved(r *Resolved) error {
 	for name, ref := range r.Secrets {
 		if ref.Env != "" {
 			if _, ok := os.LookupEnv(ref.Env); !ok {
@@ -288,6 +300,14 @@ func validateResolved(r *Resolved) error {
 			}
 		}
 	}
+	return ValidateScope(r)
+}
+
+// ValidateScope checks runtime prerequisites and ownership conflicts for the
+// components present in a resolved profile. Secret values are resolved lazily
+// while planning, which keeps unused declarations outside a narrowed scope
+// from blocking the command.
+func ValidateScope(r *Resolved) error {
 	targets := map[string]string{}
 	skills := map[string]string{}
 	servers := map[string]string{}

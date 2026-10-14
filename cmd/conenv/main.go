@@ -23,6 +23,20 @@ type commonFlags struct {
 	profile          string
 	json             bool
 	selectComponents bool
+	selection        string
+	only             stringList
+}
+
+type stringList []string
+
+func (values *stringList) String() string { return strings.Join(*values, ",") }
+
+func (values *stringList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("selection target must not be empty")
+	}
+	*values = append(*values, value)
+	return nil
 }
 
 var errSelectionCancelled = errors.New("component selection cancelled")
@@ -71,6 +85,9 @@ func run(args []string) int {
 			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
 				return fail(err, 1)
 			}
+			if err := conenv.ValidateScope(resolved); err != nil {
+				return fail(err, 2)
+			}
 		}
 		plan, err := conenv.BuildPlan(resolved)
 		if err != nil {
@@ -88,28 +105,39 @@ func run(args []string) int {
 		profile := fs.String("profile", "", "profile name")
 		yes := fs.Bool("yes", false, "apply without prompting")
 		selectComponents := fs.Bool("select", false, "interactively select components")
+		selection := fs.String("selection", "", "load an exact selection from YAML")
+		var only stringList
+		fs.Var(&only, "only", "select a component or nested resource (repeatable)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
 		}
 		if fs.NArg() != 0 {
 			return fail(errors.New("apply does not accept positional arguments"), 2)
 		}
-		common := commonFlags{repo: *repo, root: *root, profile: *profile}
+		common := commonFlags{repo: *repo, root: *root, profile: *profile, selectComponents: *selectComponents, selection: *selection, only: only}
+		if err := validateScopeFlags(common); err != nil {
+			return fail(err, 2)
+		}
 		resolved, err := loadResolved(common)
 		if err != nil {
 			return fail(err, 2)
 		}
 		tuiConfirmed := false
-		if *selectComponents {
+		if common.selectComponents {
 			if canUseTUI(os.Stdin, os.Stdout) {
 				result, err := runComponentTUI(os.Stdin, os.Stdout, resolved, !*yes)
 				if err != nil {
 					return failSelection(err)
 				}
-				filterComponents(resolved, result.SelectedIDs)
+				if err := filterComponents(resolved, result.SelectedIDs); err != nil {
+					return failSelection(err)
+				}
 				tuiConfirmed = result.Confirmed && !*yes
 			} else if err := chooseComponentsLineMode(os.Stdin, os.Stdout, resolved); err != nil {
 				return failSelection(err)
+			}
+			if err := conenv.ValidateScope(resolved); err != nil {
+				return fail(err, 2)
 			}
 		}
 		plan, err := conenv.BuildPlan(resolved)
@@ -152,6 +180,9 @@ func run(args []string) int {
 			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
 				return fail(err, 1)
 			}
+			if err := conenv.ValidateScope(resolved); err != nil {
+				return fail(err, 2)
+			}
 		}
 		results := conenv.Doctor(resolved)
 		unhealthy := false
@@ -173,6 +204,40 @@ func run(args []string) int {
 		if unhealthy {
 			return 2
 		}
+		return 0
+	case "select":
+		fs := flag.NewFlagSet("select", flag.ContinueOnError)
+		repo := fs.String("repo", "", "configuration repository")
+		root := fs.String("root", "", "deprecated alias for --repo")
+		profile := fs.String("profile", "", "profile name")
+		writePath := fs.String("write", "", "write the selection YAML")
+		if err := fs.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if fs.NArg() != 0 || *writePath == "" {
+			return fail(errors.New("usage: conenv select --write FILE [--repo DIR] [--profile NAME]"), 2)
+		}
+		common := commonFlags{repo: *repo, root: *root, profile: *profile, selectComponents: true}
+		resolved, err := loadResolved(common)
+		if err != nil {
+			return fail(err, 2)
+		}
+		if err := chooseComponents(os.Stdin, os.Stdout, resolved); err != nil {
+			return failSelection(err)
+		}
+		targets := make([]string, 0, len(resolved.Components))
+		for _, component := range resolved.Components {
+			targets = append(targets, component.Name)
+		}
+		spec, err := conenv.SelectionFromTargets(resolved, targets)
+		if err != nil {
+			return fail(err, 2)
+		}
+		if err := conenv.SaveSelection(*writePath, spec); err != nil {
+			return fail(err, 1)
+		}
+		absolute, _ := filepath.Abs(*writePath)
+		fmt.Printf("wrote selection to %s\n", absolute)
 		return 0
 	case "restore":
 		runID, yes, err := parseRestore(args[1:])
@@ -279,11 +344,33 @@ func parseCommon(name string, args []string, jsonFlag, selectFlag bool) (commonF
 	}
 	if selectFlag {
 		fs.BoolVar(&common.selectComponents, "select", false, "interactively select components")
+		fs.StringVar(&common.selection, "selection", "", "load an exact selection from YAML")
+		fs.Var(&common.only, "only", "select a component or nested resource (repeatable)")
 	}
 	if err := fs.Parse(args); err != nil {
 		return common, nil, err
 	}
+	if err := validateScopeFlags(common); err != nil {
+		return common, nil, err
+	}
 	return common, fs.Args(), nil
+}
+
+func validateScopeFlags(common commonFlags) error {
+	selectedModes := 0
+	if common.selectComponents {
+		selectedModes++
+	}
+	if common.selection != "" {
+		selectedModes++
+	}
+	if len(common.only) > 0 {
+		selectedModes++
+	}
+	if selectedModes > 1 {
+		return errors.New("use only one of --select, --selection, and --only")
+	}
+	return nil
 }
 
 func loadResolved(common commonFlags) (*conenv.Resolved, error) {
@@ -294,11 +381,43 @@ func loadResolved(common commonFlags) (*conenv.Resolved, error) {
 	if explicit == "" {
 		explicit = common.root
 	}
-	selection, err := conenv.ResolveRepository(explicit)
+	repository, err := conenv.ResolveRepository(explicit)
 	if err != nil {
 		return nil, err
 	}
-	return conenv.Load(selection.Path, common.profile)
+	var spec *conenv.SelectionSpec
+	if common.selection != "" {
+		spec, err = conenv.LoadSelection(common.selection)
+		if err != nil {
+			return nil, err
+		}
+		if common.profile == "" {
+			common.profile = spec.Profile
+		}
+	}
+	resolved, err := conenv.LoadProfile(repository.Path, common.profile)
+	if err != nil {
+		return nil, err
+	}
+	if len(common.only) > 0 {
+		spec, err = conenv.SelectionFromTargets(resolved, common.only)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if spec != nil {
+		resolved, err = conenv.ApplySelection(resolved, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if common.selectComponents {
+		return resolved, nil
+	}
+	if spec != nil {
+		return resolved, conenv.ValidateScope(resolved)
+	}
+	return resolved, conenv.ValidateResolved(resolved)
 }
 
 func printPlan(plan *conenv.Plan, asJSON bool) {
@@ -339,10 +458,11 @@ func usage() {
 
 Usage:
   conenv validate [--repo DIR] [--profile NAME]
-  conenv plan     [--repo DIR] [--profile NAME] [--select] [--json]
-  conenv apply    [--repo DIR] [--profile NAME] [--select] [--yes]
-  conenv status   [--repo DIR] [--profile NAME] [--select] [--json]
-  conenv doctor   [--repo DIR] [--profile NAME] [--select] [--json]
+  conenv plan     [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+  conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes]
+  conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+  conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+  conenv select   --write FILE [--repo DIR] [--profile NAME]
   conenv restore  RUN_ID [--yes]
   conenv use      REPOSITORY
   conenv config   [--json]

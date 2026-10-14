@@ -24,19 +24,21 @@ Register a configuration repository once, then validate and apply its selected p
 ./conenv.exe validate
 ./conenv.exe plan
 ./conenv.exe apply --select
+./conenv.exe apply --selection selection.yaml --yes
 ./conenv.exe doctor
 ```
 
-`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` includes a plan preview and lets you return to the checklist before confirming. `plan`, `status`, and `doctor` are read-only. `--yes` skips the apply preview and confirmation.
+`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` includes a plan preview and lets you return to the checklist before confirming. `conenv select --write selection.yaml` exports the same choice for agents and scripts; `--selection` replays it exactly, while repeatable `--only` accepts stable targets such as `git` or `codex/skills/release-notes`. These three selection modes are mutually exclusive. `plan`, `status`, and `doctor` are read-only. `--yes` skips only the apply preview and confirmation.
 
 ## Commands
 
 ```text
 conenv validate [--repo DIR] [--profile NAME]
-conenv plan     [--repo DIR] [--profile NAME] [--select] [--json]
-conenv apply    [--repo DIR] [--profile NAME] [--select] [--yes]
-conenv status   [--repo DIR] [--profile NAME] [--select] [--json]
-conenv doctor   [--repo DIR] [--profile NAME] [--select] [--json]
+conenv plan     [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes]
+conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
+conenv select   --write FILE [--repo DIR] [--profile NAME]
 conenv restore  RUN_ID [--yes]
 conenv use      REPOSITORY
 conenv config   [--json]

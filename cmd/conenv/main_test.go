@@ -58,7 +58,10 @@ func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 			selected = append(selected, item.ID)
 		}
 	}
-	filtered := filteredResolved(resolved, selected)
+	filtered, err := filteredResolved(resolved, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := []string{filtered.Components[0].Name, filtered.Components[1].Name}; !reflect.DeepEqual(got, []string{"skills", "shell"}) {
 		t.Fatalf("filtered order = %v", got)
 	}
@@ -108,7 +111,11 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 		idsByTitle[item.Title] = item.ID
 	}
 
-	skillOnly := filteredResolved(resolved, []string{idsByTitle["two"]}).Components[0]
+	skillFiltered, err := filteredResolved(resolved, []string{idsByTitle["two"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillOnly := skillFiltered.Components[0]
 	if len(skillOnly.Packages) != 0 || len(skillOnly.Checks) != 0 || len(skillOnly.Codex.Config) != 0 || len(skillOnly.Codex.MCPServers) != 0 {
 		t.Fatalf("skill-only selection retained component resources: %#v", skillOnly)
 	}
@@ -116,11 +123,46 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 		t.Fatalf("skill-only selection = %#v", skillOnly.Codex.Skills)
 	}
 
-	resourcesOnly := filteredResolved(resolved, []string{idsByTitle["Component resources"]}).Components[0]
+	resourcesFiltered, err := filteredResolved(resolved, []string{idsByTitle["Component resources"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourcesOnly := resourcesFiltered.Components[0]
 	if len(resourcesOnly.Packages) != 1 || len(resourcesOnly.Checks) != 1 || len(resourcesOnly.Codex.Config) != 1 || len(resourcesOnly.Codex.MCPServers) != 1 {
 		t.Fatalf("resource selection lost component resources: %#v", resourcesOnly)
 	}
 	if len(resourcesOnly.Codex.Skills) != 0 {
 		t.Fatalf("resource selection retained skills: %#v", resourcesOnly.Codex.Skills)
+	}
+}
+
+func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{{
+		Name: "codex", Component: conenv.Component{Codex: &conenv.Codex{
+			Config: map[string]any{"model": "example"},
+			Skills: []conenv.Skill{{Name: "one", Source: "one"}, {Name: "two", Source: "two"}},
+		}},
+	}}}
+	catalog := newSelectionCatalog(resolved)
+	var selectedIDs []string
+	for _, item := range catalog.items {
+		if item.Title == "Component resources" || item.Title == "two" {
+			selectedIDs = append(selectedIDs, item.ID)
+		}
+	}
+	fromTUI, err := filteredResolved(resolved, selectedIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := conenv.SelectionFromTargets(resolved, []string{"codex/resources", "codex/skills/two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := conenv.ApplySelection(resolved, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fromTUI.Components, fromFile.Components) {
+		t.Fatalf("TUI selection %#v differs from declarative selection %#v", fromTUI.Components, fromFile.Components)
 	}
 }
