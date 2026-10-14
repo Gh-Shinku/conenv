@@ -119,26 +119,6 @@ The [configuration guide](docs/configuration.md#agents) documents the adapter de
 
 Undo removes destinations that `apply` created, restores the backed-up originals, and rolls back the recorded profile, managed paths, and run metadata. Installed packages are never uninstalled; they are listed as retained. Non-interactive undo requires `--yes`, and `--undo` cannot be combined with `--select`, `--only`, `--selection`, `--save`, or `--write`.
 
-## Removed commands
-
-The CLI intentionally exposes only `config`, `apply`, and `status`. Older scripts need these replacements:
-
-| Removed | Replacement |
-|---|---|
-| `validate` | `config --check` |
-| `plan` | `apply --dry-run` |
-| `doctor` | `status --check` |
-| `restore RUN_ID` | `apply --undo RUN_ID` |
-| `history list|show` | `apply --undo --list`, `apply --undo RUN_ID --dry-run` |
-| `select --write FILE` | `apply --select --write FILE` |
-| `profile list|show` | `config --profiles`, `config --profile-detail NAME` |
-| `component list|show` | `config --components`, `config --component-detail NAME` |
-| `repo show|use|unset`, `use`, `config --json` | `config`, `config DIR`, `config --unset` |
-| `schema --write FILE` | copy [conenv.v2.schema.json](internal/assets/schema/conenv.v2.schema.json) from the repository |
-| `version` | no equivalent; the release tag identifies the build |
-| component `codex:` block | `agents:` with `harness: codex` (see [Agents](#agents)) |
-| `schemaVersion: conenv/v1` | `schemaVersion: conenv/v2` |
-
 ## Documentation
 
 - [Configuration guide](docs/configuration.md) — manifests, profiles, files, secrets, packages, health checks, agents, MCP, and recovery

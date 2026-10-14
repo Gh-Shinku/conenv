@@ -2,13 +2,13 @@
 
 The `conenv.yaml` committed to a dedicated configuration repository is the source of truth for an environment. The CLI repository contains only the program, documentation, examples, and embedded schema.
 
-Export the schema into a configuration repository for editor completion by copying [`internal/assets/schema/conenv.v1.schema.json`](../internal/assets/schema/conenv.v1.schema.json) to `C:\path\to\conenv-config\.conenv\conenv.v1.schema.json`.
+Export the schema into a configuration repository for editor completion by copying [`internal/assets/schema/conenv.v2.schema.json`](../internal/assets/schema/conenv.v2.schema.json) to `C:\path\to\conenv-config\.conenv\conenv.v2.schema.json`.
 
 Then reference it from the manifest:
 
 ```yaml
-# yaml-language-server: $schema=./.conenv/conenv.v1.schema.json
-schemaVersion: conenv/v1
+# yaml-language-server: $schema=./.conenv/conenv.v2.schema.json
+schemaVersion: conenv/v2
 defaultProfile: personal
 ```
 

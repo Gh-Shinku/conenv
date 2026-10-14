@@ -18,6 +18,6 @@ Autonomous delivery applies to implementation, fixes, and configuration changes 
 This project is early and intentionally fluid: any implementation may change in a breaking way. Do not add compatibility layers for the sake of existing users or existing repositories.
 
 - Do not keep deprecated aliases, dual formats, or version fallbacks. When a manifest field, command, flag, or on-disk format changes, replace it outright.
-- Do not write migration code paths. `conenv config --check` reports what no longer parses, and the repository owner updates the configuration repository.
-- Update the documentation, examples, and the embedded JSON Schema in the same change that breaks something, and list the replacement in the README's removed-commands table.
+- Do not publish compatibility tables, migration guides, or deprecation notes. Documentation describes the current behavior only.
+- Update the documentation, examples, and the embedded JSON Schema in the same change that breaks something, keeping no mention of the previous form.
 - Validate input strictly: an unknown command, flag, harness, or manifest field is an error, never a silent fallback.
