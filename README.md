@@ -1,6 +1,6 @@
 # conenv
 
-`conenv` is a declarative, repository-first manager for personal development environments. It installs tools, links or renders configuration files, provisions Codex skills and MCP servers, detects drift, and can undo an applied run.
+`conenv` is a declarative, repository-first manager for personal development environments. It installs tools, links or renders configuration files, provisions agent harness configuration with skills and MCP servers, detects drift, and can undo an applied run.
 
 The CLI and configuration repository are deliberately independent. Windows is the supported v0.1 runtime; the Go core and manifest format are designed to accommodate Linux and macOS later.
 
@@ -75,7 +75,36 @@ Save a scope once and every later `status` or `apply` reuses it without repeatin
 
 `--only` and `--selection` are temporary unless `--save` is given. Interactive `apply` asks whether to save the selection after the plan is confirmed. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, or `COMPONENT/skills/SKILL`.
 
-`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for agents and scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
+`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and agent declarations and individual skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
+
+## Agents
+
+A component declares which agent harnesses it contributes to. `harness` selects an adapter that knows where that harness keeps its global configuration, so declarations stay portable across machines:
+
+```yaml
+components:
+  ai-agents:
+    agents:
+      codex:
+        harness: codex
+        config:
+          approval_policy: on-request
+        skills:
+          - name: release-notes
+            source: ai/skills/release-notes
+```
+
+Several components can contribute to one agent and one component can target several harnesses; settings are merged into a single configuration file per agent. Skills are linked into the shared global directory `~/.agents/skills`, so one skill serves every harness on the machine. Paths come from the adapter and can be overridden per declaration with `configPath` and `skillsDir`, or per machine with `CONENV_AGENT_<HARNESS>_CONFIG` and `CONENV_AGENT_<HARNESS>_SKILLS_DIR`.
+
+`config` accepts only the settings the adapter manages: an unregistered key is a configuration error, so a typo cannot inject an unknown key into another tool's file. Existing unmanaged keys are retained, generated configuration is written with owner-only permissions, and a change is committed only after the file can be parsed back.
+
+Inspect what conenv knows about the harnesses on this machine:
+
+```powershell
+./conenv.exe config --list-agents
+```
+
+The [configuration guide](docs/configuration.md#agents) documents the adapter defaults, merging rules, MCP declarations, and skill requirements.
 
 ## Undo
 
@@ -105,14 +134,16 @@ The CLI intentionally exposes only `config`, `apply`, and `status`. Older script
 | `profile list|show` | `config --profiles`, `config --profile-detail NAME` |
 | `component list|show` | `config --components`, `config --component-detail NAME` |
 | `repo show|use|unset`, `use`, `config --json` | `config`, `config DIR`, `config --unset` |
-| `schema --write FILE` | copy [conenv.v1.schema.json](internal/assets/schema/conenv.v1.schema.json) from the repository |
+| `schema --write FILE` | copy [conenv.v2.schema.json](internal/assets/schema/conenv.v2.schema.json) from the repository |
 | `version` | no equivalent; the release tag identifies the build |
+| component `codex:` block | `agents:` with `harness: codex` (see [Agents](#agents)) |
+| `schemaVersion: conenv/v1` | `schemaVersion: conenv/v2` |
 
 ## Documentation
 
-- [Configuration guide](docs/configuration.md) — manifests, profiles, files, secrets, packages, health checks, Codex, MCP, and recovery
+- [Configuration guide](docs/configuration.md) — manifests, profiles, files, secrets, packages, health checks, agents, MCP, and recovery
 - [Example manifest](examples/conenv.yaml)
-- [Embedded manifest JSON Schema](internal/assets/schema/conenv.v1.schema.json)
+- [Embedded manifest JSON Schema](internal/assets/schema/conenv.v2.schema.json)
 
 ## Development
 

@@ -12,3 +12,12 @@ Autonomous delivery applies to implementation, fixes, and configuration changes 
 - Merging does not include publishing releases, creating release tags, or deploying. Perform these actions under separate authorization.
 - Report commit and push status at delivery, with reasons for any unfinished steps.
 <!-- vibe-bootstrap:git:end -->
+
+## Compatibility
+
+This project is early and intentionally fluid: any implementation may change in a breaking way. Do not add compatibility layers for the sake of existing users or existing repositories.
+
+- Do not keep deprecated aliases, dual formats, or version fallbacks. When a manifest field, command, flag, or on-disk format changes, replace it outright.
+- Do not write migration code paths. `conenv config --check` reports what no longer parses, and the repository owner updates the configuration repository.
+- Update the documentation, examples, and the embedded JSON Schema in the same change that breaks something, and list the replacement in the README's removed-commands table.
+- Validate input strictly: an unknown command, flag, harness, or manifest field is an error, never a silent fallback.

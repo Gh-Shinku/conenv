@@ -26,7 +26,7 @@ Use `conenv config` to inspect the resolved path and its source, `conenv config 
 ## Complete example
 
 ```yaml
-schemaVersion: conenv/v1
+schemaVersion: conenv/v2
 defaultProfile: personal
 
 variables:
@@ -41,7 +41,7 @@ profiles:
     components: [shell, git]
   personal:
     extends: [base]
-    components: [codex]
+    components: [ai-agents]
     variables:
       git_email: ada@example.com
 
@@ -67,17 +67,20 @@ components:
         command: git
         args: [--version]
 
-  codex:
-    codex:
-      config:
-        approval_policy: on-request
-      skills:
-        - name: my-workflow
-          source: ai/skills/my-workflow
-      mcpServers:
-        openaiDeveloperDocs:
-          type: http
-          url: https://developers.openai.com/mcp
+  ai-agents:
+    category: ai
+    agents:
+      codex:
+        harness: codex
+        config:
+          approval_policy: on-request
+        skills:
+          - name: my-workflow
+            source: ai/skills/my-workflow
+        mcpServers:
+          openaiDeveloperDocs:
+            type: http
+            url: https://developers.openai.com/mcp
 ```
 
 ## Profiles and components
@@ -111,12 +114,12 @@ components:
   powershell:
     category: program
     description: PowerShell profile
-  codex-skills:
+  ai-agents:
     category: ai
-    description: Shared Codex skills
+    description: Shared agent skills
 ```
 
-`category` accepts `program` or `ai`. If omitted, file/package components default to `program` and Codex-only components default to `ai`.
+`category` accepts `program` or `ai`. If omitted, file/package components default to `program` and agent-only components default to `ai`.
 
 ## Variables and paths
 
@@ -198,7 +201,7 @@ secrets:
 
 Exactly one source is required. Conenv validates that the source exists, resolves its value only when rendering, and excludes values from plans, JSON output, backups metadata, and `~/.conenv/state.json`.
 
-A rendered file or generated Codex configuration may still contain a resolved value. Keep those destinations sensitive and outside version control.
+A rendered file or generated agent configuration may still contain a resolved value. Keep those destinations sensitive and outside version control.
 
 ## Packages
 
@@ -239,64 +242,93 @@ checks:
     args: [--version]
 ```
 
-`conenv status --check` combines custom checks with desired-state checks for packages, links, rendered files, Codex configuration, and skills. Without `--check`, `status` reports drift but does not execute these checks.
+`conenv status --check` combines custom checks with desired-state checks for packages, links, rendered files, agent configuration, and skills. Without `--check`, `status` reports drift but does not execute these checks.
 
-## Codex
+## Agents
 
-Conenv merges declared settings into `~/.codex/config.toml`:
-
-```yaml
-codex:
-  config:
-    approval_policy: on-request
-    sandbox_mode: workspace-write
-```
-
-Existing unmanaged keys and MCP servers are retained, though TOML comments and formatting may be normalized. The generated config is always handled as sensitive.
-
-Skills are linked to `~/.codex/skills/<name>` and each source directory must contain `SKILL.md`:
+A component declares which agent harnesses it contributes to. The component name is the repository-side grouping; the agent name under `agents` is the machine-side target, and `harness` selects the adapter that knows where that harness keeps its global configuration.
 
 ```yaml
-codex:
-  skills:
-    - name: release-notes
-      source: ai/skills/release-notes
+components:
+  ai-agents:
+    category: ai
+    agents:
+      codex:
+        harness: codex
+        config:
+          approval_policy: on-request
+          sandbox_mode: workspace-write
+        skills:
+          - name: release-notes
+            source: ai/skills/release-notes
 ```
 
-When `--select` is used, skills appear as children of their component and can be selected independently. A component that also contains packages, files, checks, Codex configuration, or MCP servers exposes those declarations as a separate `Component resources` child.
+The same component can target several harnesses, and several components can contribute to the same agent; their settings are merged into one file per agent.
 
-### MCP servers
+### Global directories
+
+Paths come from the adapter, so a declaration stays portable:
+
+| Harness | Configuration | Skills |
+|---|---|---|
+| `codex` | `~/.codex/config.toml` | `~/.agents/skills/<name>` |
+
+Skills live in one shared global directory and are linked there once, even when several agents declare the same skill. Every skill source must contain `SKILL.md`.
+
+Override a path only when a machine deviates from these defaults:
+
+```yaml
+agents:
+  codex:
+    harness: codex
+    configPath: '{{ .home }}/.codex/config.toml'
+    skillsDir: '{{ .home }}/.agents/skills'
+```
+
+`CONENV_AGENT_CODEX_CONFIG` and `CONENV_AGENT_CODEX_SKILLS_DIR` override the defaults for experiments and tests. `conenv config --list-agents` prints each registered harness with its resolved paths and whether those directories exist on this machine.
+
+### Settings and merging
+
+`config` accepts only the settings the adapter manages; an unregistered key is a configuration error, so a typo cannot inject an unknown key into a tool's file. Existing unmanaged keys and MCP server entries are retained, though TOML comments and formatting may be normalized. Generated configuration is always handled as sensitive: it is written with owner-only permissions, backed up before a change, reparsed after the write, and rolled back if the result cannot be read back.
+
+`mcpServers` is declared once and rendered into whatever field name the harness expects:
 
 An HTTP server requires a URL:
 
 ```yaml
-codex:
-  mcpServers:
-    documentation:
-      type: http
-      url: https://example.com/mcp
+agents:
+  codex:
+    harness: codex
+    mcpServers:
+      documentation:
+        type: http
+        url: https://example.com/mcp
 ```
 
 A stdio server requires a command and may include arguments and environment values:
 
 ```yaml
-codex:
-  mcpServers:
-    localTools:
-      type: stdio
-      command: npx
-      args: [-y, example-mcp]
-      env:
-        TOKEN: '{{ secret "api_token" }}'
+agents:
+  codex:
+    harness: codex
+    mcpServers:
+      localTools:
+        type: stdio
+        command: npx
+        args: [-y, example-mcp]
+        env:
+          TOKEN: '{{ secret "api_token" }}'
 ```
 
 See the official [Codex configuration reference](https://developers.openai.com/codex/config-reference) and [MCP guide](https://developers.openai.com/learn/docs-mcp).
+
+When `--select` is used, a component shows its agent as a child node, and each agent exposes its configuration and MCP servers as an `Agent resources` child plus one node per skill. Resource IDs follow the same shape: `ai-agents/agents/codex`, `ai-agents/agents/codex/resources`, and `ai-agents/agents/codex/skills/release-notes`.
 
 ## Planning, drift, and recovery
 
 `conenv apply --dry-run` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `3` when actions are pending. Applying the same manifest twice is a no-op.
 
-Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; individual Codex skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
+Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; agents and individual skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
 
 A scope given on one command is temporary. To stop repeating the same arguments, save it as the machine default, which every later `apply` and `status` reads:
 
@@ -315,12 +347,15 @@ profile: personal
 components:
   git:
     resources: true
-  codex:
-    skills:
-      - release-notes
+  ai-agents:
+    agents:
+      codex:
+        resources: true
+        skills:
+          - release-notes
 ```
 
-The file is an explicit allowlist: omitted components and newly added resources are not selected. `resources` covers packages, files, checks, Codex configuration, and MCP servers declared directly by the component; `skills` selects individual Codex skills. Unknown profiles, components, skills, fields, and duplicate skills are errors. For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, or `COMPONENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
+The file is an explicit allowlist: omitted components and newly added resources are not selected. At component level, `resources` covers packages, files, and checks, while `agents` selects individual agent declarations; inside an agent, `resources` covers its configuration and MCP servers and `skills` selects individual skills. Unknown profiles, components, agents, skills, fields, and duplicate skills are errors. For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/resources`, or `COMPONENT/agents/AGENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
 
 Before replacing a destination, conenv stores its current contents under:
 
