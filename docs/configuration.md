@@ -298,7 +298,7 @@ See the official [Codex configuration reference](https://developers.openai.com/c
 
 `conenv plan` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `2` when actions are pending. Applying the same manifest twice is a no-op.
 
-Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive checklist containing the profile's components supported by the current platform. Toggle individual numbers or ranges, press Enter to confirm, and use `a`, `n`, or `q` for all, none, or cancel. The selection affects only that command and does not modify the profile.
+Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive checklist containing the profile's components supported by the current platform. Components are selected by default. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation. The selection affects only that command and does not modify the profile.
 
 Before replacing a destination, conenv stores its current contents under:
 

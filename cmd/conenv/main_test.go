@@ -41,3 +41,18 @@ func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 		t.Fatalf("unexpected menu output: %s", text)
 	}
 }
+
+func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
+		{Name: "skills"},
+		{Name: "shell"},
+		{Name: "vim"},
+	}}
+	filtered := filteredResolved(resolved, []string{"vim", "skills"})
+	if got := []string{filtered.Components[0].Name, filtered.Components[1].Name}; !reflect.DeepEqual(got, []string{"skills", "vim"}) {
+		t.Fatalf("filtered order = %v", got)
+	}
+	if len(resolved.Components) != 3 {
+		t.Fatal("filtering a copy should not mutate the resolved profile")
+	}
+}
