@@ -27,7 +27,7 @@ Register a configuration repository once, then validate and apply its selected p
 ./conenv.exe doctor
 ```
 
-`--select` opens a keyboard-driven component checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default; use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` includes a plan preview and lets you return to the checklist before confirming. `plan`, `status`, and `doctor` are read-only. `--yes` skips the apply preview and confirmation.
+`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` includes a plan preview and lets you return to the checklist before confirming. `plan`, `status`, and `doctor` are read-only. `--yes` skips the apply preview and confirmation.
 
 ## Commands
 

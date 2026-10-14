@@ -16,15 +16,38 @@ import (
 )
 
 type componentOption struct {
-	name        string
-	category    string
-	description string
+	componentIndex int
+	name           string
+	category       string
+	description    string
+}
+
+type selectionTargetKind int
+
+const (
+	selectComponent selectionTargetKind = iota
+	selectComponentResources
+	selectSkill
+)
+
+type selectionTarget struct {
+	componentIndex int
+	kind           selectionTargetKind
+	skillIndex     int
+}
+
+type selectionCatalog struct {
+	items   []tui.Item
+	targets map[string]selectionTarget
 }
 
 func chooseComponents(input io.Reader, output io.Writer, resolved *conenv.Resolved) error {
 	if canUseTUI(input, output) {
 		result, err := runComponentTUI(input, output, resolved, false)
 		if err != nil {
+			if errors.Is(err, tui.ErrCancelled) {
+				return errSelectionCancelled
+			}
 			return err
 		}
 		filterComponents(resolved, result.SelectedIDs)
@@ -36,29 +59,37 @@ func chooseComponents(input io.Reader, output io.Writer, resolved *conenv.Resolv
 // chooseComponentsLineMode preserves interactive selection for redirected IO
 // and tests, where a full-screen terminal application cannot run safely.
 func chooseComponentsLineMode(input io.Reader, output io.Writer, resolved *conenv.Resolved) error {
-	options := componentOptions(resolved)
-	if len(options) == 0 {
+	catalog := newSelectionCatalog(resolved)
+	if len(catalog.items) == 0 {
 		return errors.New("the selected profile has no components supported on this platform")
 	}
-	selected := map[string]bool{}
+	tree, err := tui.NewTree(catalog.items)
+	if err != nil {
+		return err
+	}
 	reader := bufio.NewReader(input)
 	for {
-		fmt.Fprintf(output, "\nSelect components for profile %q:\n", resolved.Profile)
+		fmt.Fprintf(output, "\nSelect items for profile %q:\n", resolved.Profile)
 		lastCategory := ""
-		for index, option := range options {
-			if option.category != lastCategory {
-				fmt.Fprintf(output, "\n%s\n", strings.ToUpper(option.category))
-				lastCategory = option.category
+		for index, item := range tree.Items() {
+			depth := tree.Depth(item.ID)
+			if depth == 0 && item.Category != lastCategory {
+				fmt.Fprintf(output, "\n%s\n", strings.ToUpper(item.Category))
+				lastCategory = item.Category
 			}
 			mark := " "
-			if selected[option.name] {
+			switch tree.State(item.ID) {
+			case tui.Selected:
 				mark = "x"
+			case tui.PartiallySelected:
+				mark = "~"
 			}
 			description := ""
-			if option.description != "" {
-				description = " — " + option.description
+			if item.Description != "" {
+				description = " — " + item.Description
 			}
-			fmt.Fprintf(output, "  [%s] %d. %s%s\n", mark, index+1, option.name, description)
+			indent := strings.Repeat("  ", depth+1)
+			fmt.Fprintf(output, "%s[%s] %d. %s%s\n", indent, mark, index+1, item.Title, description)
 		}
 		fmt.Fprint(output, "\nToggle numbers/ranges (1,3-5), a=all, n=none, Enter=confirm, q=cancel: ")
 		line, err := reader.ReadString('\n')
@@ -71,47 +102,34 @@ func chooseComponentsLineMode(input io.Reader, output io.Writer, resolved *conen
 		choice := strings.TrimSpace(strings.ToLower(line))
 		switch choice {
 		case "":
-			if len(selected) == 0 {
-				fmt.Fprintln(output, "Select at least one component or enter q to cancel.")
+			if tree.SelectedCount() == 0 {
+				fmt.Fprintln(output, "Select at least one item or enter q to cancel.")
 				continue
 			}
-			filtered := resolved.Components[:0]
-			var names []string
-			for _, component := range resolved.Components {
-				if selected[component.Name] {
-					filtered = append(filtered, component)
-					names = append(names, component.Name)
-				}
-			}
-			resolved.Components = filtered
-			fmt.Fprintf(output, "Selected: %s\n", strings.Join(names, ", "))
+			filterComponents(resolved, tree.SelectedIDs())
+			fmt.Fprintf(output, "Selected: %s\n", strings.Join(selectedTitles(tree), ", "))
 			return nil
 		case "q":
 			return errSelectionCancelled
 		case "a":
-			selectAll := len(selected) != len(options)
-			clear(selected)
-			if selectAll {
-				for _, option := range options {
-					selected[option.name] = true
-				}
+			if tree.SelectedCount() == tree.SelectableCount() {
+				tree.Clear()
+			} else {
+				tree.SelectAll()
 			}
 			continue
 		case "n":
-			clear(selected)
+			tree.Clear()
 			continue
 		}
-		indices, err := parseSelection(choice, len(options))
+		items := tree.Items()
+		indices, err := parseSelection(choice, len(items))
 		if err != nil {
 			fmt.Fprintf(output, "Invalid selection: %v\n", err)
 			continue
 		}
 		for _, index := range indices {
-			name := options[index].name
-			selected[name] = !selected[name]
-			if !selected[name] {
-				delete(selected, name)
-			}
+			tree.Toggle(items[index].ID)
 		}
 	}
 }
@@ -125,19 +143,10 @@ func canUseTUI(input io.Reader, output io.Writer) bool {
 // runComponentTUI is the adapter between conenv's domain model and the
 // presentation-only models exposed by internal/tui.
 func runComponentTUI(input io.Reader, output io.Writer, resolved *conenv.Resolved, preview bool) (tui.Result, error) {
-	options := componentOptions(resolved)
-	components := make([]tui.Component, 0, len(options))
-	for _, option := range options {
-		components = append(components, tui.Component{
-			ID:          option.name,
-			Title:       option.name,
-			Category:    option.category,
-			Description: option.description,
-		})
-	}
+	catalog := newSelectionCatalog(resolved)
 	config := tui.Config{
 		Profile:      resolved.Profile,
-		Components:   components,
+		Items:        catalog.items,
 		Preview:      preview,
 		ConfirmLabel: "apply",
 	}
@@ -167,15 +176,65 @@ func presentPlan(plan *conenv.Plan) tui.Plan {
 }
 
 func filteredResolved(resolved *conenv.Resolved, selectedIDs []string) *conenv.Resolved {
+	catalog := newSelectionCatalog(resolved)
 	copyResolved := *resolved
-	selected := make(map[string]bool, len(selectedIDs))
-	for _, id := range selectedIDs {
-		selected[id] = true
+	type componentSelection struct {
+		whole  bool
+		base   bool
+		skills map[int]bool
 	}
-	copyResolved.Components = make([]conenv.NamedComponent, 0, len(selectedIDs))
-	for _, component := range resolved.Components {
-		if selected[component.Name] {
+	selected := make(map[int]*componentSelection)
+	for _, id := range selectedIDs {
+		target, ok := catalog.targets[id]
+		if !ok {
+			continue
+		}
+		selection := selected[target.componentIndex]
+		if selection == nil {
+			selection = &componentSelection{skills: map[int]bool{}}
+			selected[target.componentIndex] = selection
+		}
+		switch target.kind {
+		case selectComponent:
+			selection.whole = true
+		case selectComponentResources:
+			selection.base = true
+		case selectSkill:
+			selection.skills[target.skillIndex] = true
+		}
+	}
+	copyResolved.Components = make([]conenv.NamedComponent, 0, len(resolved.Components))
+	for componentIndex, component := range resolved.Components {
+		selection := selected[componentIndex]
+		if selection == nil {
+			continue
+		}
+		if selection.whole {
 			copyResolved.Components = append(copyResolved.Components, component)
+			continue
+		}
+		filtered := component
+		if !selection.base {
+			filtered.Packages = nil
+			filtered.Files = nil
+			filtered.Checks = nil
+		}
+		if component.Codex != nil {
+			codex := *component.Codex
+			codex.Skills = make([]conenv.Skill, 0, len(selection.skills))
+			for skillIndex, skill := range component.Codex.Skills {
+				if selection.skills[skillIndex] {
+					codex.Skills = append(codex.Skills, skill)
+				}
+			}
+			if !selection.base {
+				codex.Config = nil
+				codex.MCPServers = nil
+			}
+			filtered.Codex = &codex
+		}
+		if selection.base || (filtered.Codex != nil && len(filtered.Codex.Skills) > 0) {
+			copyResolved.Components = append(copyResolved.Components, filtered)
 		}
 	}
 	return &copyResolved
@@ -195,7 +254,7 @@ func failSelection(err error) int {
 func componentOptions(resolved *conenv.Resolved) []componentOption {
 	options := make([]componentOption, 0, len(resolved.Components))
 	for _, category := range []string{"program", "ai"} {
-		for _, component := range resolved.Components {
+		for componentIndex, component := range resolved.Components {
 			componentCategory := component.Category
 			if componentCategory == "" {
 				componentCategory = "program"
@@ -204,11 +263,66 @@ func componentOptions(resolved *conenv.Resolved) []componentOption {
 				}
 			}
 			if componentCategory == category {
-				options = append(options, componentOption{name: component.Name, category: category, description: component.Description})
+				options = append(options, componentOption{componentIndex: componentIndex, name: component.Name, category: category, description: component.Description})
 			}
 		}
 	}
 	return options
+}
+
+func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
+	catalog := selectionCatalog{targets: make(map[string]selectionTarget)}
+	for _, option := range componentOptions(resolved) {
+		component := resolved.Components[option.componentIndex]
+		rootID := fmt.Sprintf("component:%d", option.componentIndex)
+		skills := []conenv.Skill(nil)
+		if component.Codex != nil {
+			skills = component.Codex.Skills
+		}
+		catalog.items = append(catalog.items, tui.Item{
+			ID: rootID, Title: option.name, Category: option.category, Description: option.description,
+		})
+		if len(skills) == 0 {
+			catalog.targets[rootID] = selectionTarget{componentIndex: option.componentIndex, kind: selectComponent}
+			continue
+		}
+		if hasComponentResources(component.Component) {
+			baseID := rootID + ":resources"
+			catalog.items = append(catalog.items, tui.Item{
+				ID: baseID, ParentID: rootID, Title: "Component resources", Description: "Packages, files, configuration, and checks",
+			})
+			catalog.targets[baseID] = selectionTarget{componentIndex: option.componentIndex, kind: selectComponentResources}
+		}
+		for skillIndex, skill := range skills {
+			skillID := fmt.Sprintf("%s:skill:%d", rootID, skillIndex)
+			catalog.items = append(catalog.items, tui.Item{
+				ID: skillID, ParentID: rootID, Title: skill.Name, Description: "Codex skill",
+			})
+			catalog.targets[skillID] = selectionTarget{componentIndex: option.componentIndex, kind: selectSkill, skillIndex: skillIndex}
+		}
+	}
+	return catalog
+}
+
+func hasComponentResources(component conenv.Component) bool {
+	if len(component.Packages) > 0 || len(component.Files) > 0 || len(component.Checks) > 0 {
+		return true
+	}
+	return component.Codex != nil && (len(component.Codex.Config) > 0 || len(component.Codex.MCPServers) > 0)
+}
+
+func selectedTitles(tree *tui.Tree) []string {
+	selected := make(map[string]bool)
+	for _, id := range tree.SelectedIDs() {
+		selected[id] = true
+	}
+	var titles []string
+	for _, item := range tree.Items() {
+		if selected[item.ID] {
+			titles = append(titles, item.Title)
+		}
+	}
+	return titles
 }
 
 func parseSelection(value string, maximum int) ([]int, error) {

@@ -30,7 +30,7 @@ func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 		{Name: "vim", Component: conenv.Component{Category: "program"}},
 	}}
 	var output bytes.Buffer
-	if err := chooseComponents(strings.NewReader("1,3\n\n"), &output, resolved); err != nil {
+	if err := chooseComponents(strings.NewReader("n\n1,3\n\n"), &output, resolved); err != nil {
 		t.Fatal(err)
 	}
 	if len(resolved.Components) != 2 || resolved.Components[0].Name != "skills" || resolved.Components[1].Name != "shell" {
@@ -44,15 +44,83 @@ func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 
 func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
-		{Name: "skills"},
+		{Name: "skills", Component: conenv.Component{Codex: &conenv.Codex{Skills: []conenv.Skill{
+			{Name: "project-bootstrap", Source: "project"},
+			{Name: "vibe-bootstrap", Source: "vibe"},
+		}}}},
 		{Name: "shell"},
 		{Name: "vim"},
 	}}
-	filtered := filteredResolved(resolved, []string{"vim", "skills"})
-	if got := []string{filtered.Components[0].Name, filtered.Components[1].Name}; !reflect.DeepEqual(got, []string{"skills", "vim"}) {
+	catalog := newSelectionCatalog(resolved)
+	var selected []string
+	for _, item := range catalog.items {
+		if item.Title == "vibe-bootstrap" || item.Title == "shell" {
+			selected = append(selected, item.ID)
+		}
+	}
+	filtered := filteredResolved(resolved, selected)
+	if got := []string{filtered.Components[0].Name, filtered.Components[1].Name}; !reflect.DeepEqual(got, []string{"skills", "shell"}) {
 		t.Fatalf("filtered order = %v", got)
+	}
+	if got := filtered.Components[0].Codex.Skills; len(got) != 1 || got[0].Name != "vibe-bootstrap" {
+		t.Fatalf("filtered skills = %#v", got)
 	}
 	if len(resolved.Components) != 3 {
 		t.Fatal("filtering a copy should not mutate the resolved profile")
+	}
+}
+
+func TestChooseComponentsAllowsIndividualSkill(t *testing.T) {
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
+		{Name: "codex-skills", Component: conenv.Component{Category: "ai", Codex: &conenv.Codex{Skills: []conenv.Skill{
+			{Name: "project-bootstrap", Source: "project"},
+			{Name: "vibe-bootstrap", Source: "vibe"},
+		}}}},
+	}}
+	var output bytes.Buffer
+	if err := chooseComponents(strings.NewReader("2\n\n"), &output, resolved); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Components[0].Codex.Skills; len(got) != 1 || got[0].Name != "vibe-bootstrap" {
+		t.Fatalf("selected skills = %#v", got)
+	}
+	if !strings.Contains(output.String(), "[~] 1. codex-skills") {
+		t.Fatalf("parent did not render a partial state: %s", output.String())
+	}
+}
+
+func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
+	component := conenv.NamedComponent{Name: "mixed", Component: conenv.Component{
+		Packages: []conenv.Package{{Manager: "winget", ID: "Example.Tool"}},
+		Checks:   []conenv.Check{{Name: "tool", Type: "command", Command: "tool"}},
+		Codex: &conenv.Codex{
+			Config: map[string]any{"model": "example"},
+			MCPServers: map[string]conenv.MCP{
+				"docs": {Type: "http", URL: "https://example.com"},
+			},
+			Skills: []conenv.Skill{{Name: "one", Source: "one"}, {Name: "two", Source: "two"}},
+		},
+	}}
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{component}}
+	catalog := newSelectionCatalog(resolved)
+	idsByTitle := map[string]string{}
+	for _, item := range catalog.items {
+		idsByTitle[item.Title] = item.ID
+	}
+
+	skillOnly := filteredResolved(resolved, []string{idsByTitle["two"]}).Components[0]
+	if len(skillOnly.Packages) != 0 || len(skillOnly.Checks) != 0 || len(skillOnly.Codex.Config) != 0 || len(skillOnly.Codex.MCPServers) != 0 {
+		t.Fatalf("skill-only selection retained component resources: %#v", skillOnly)
+	}
+	if len(skillOnly.Codex.Skills) != 1 || skillOnly.Codex.Skills[0].Name != "two" {
+		t.Fatalf("skill-only selection = %#v", skillOnly.Codex.Skills)
+	}
+
+	resourcesOnly := filteredResolved(resolved, []string{idsByTitle["Component resources"]}).Components[0]
+	if len(resourcesOnly.Packages) != 1 || len(resourcesOnly.Checks) != 1 || len(resourcesOnly.Codex.Config) != 1 || len(resourcesOnly.Codex.MCPServers) != 1 {
+		t.Fatalf("resource selection lost component resources: %#v", resourcesOnly)
+	}
+	if len(resourcesOnly.Codex.Skills) != 0 {
+		t.Fatalf("resource selection retained skills: %#v", resourcesOnly.Codex.Skills)
 	}
 }

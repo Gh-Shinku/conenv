@@ -15,49 +15,29 @@ const (
 )
 
 type selectorModel struct {
-	components []Component
-	selected   map[string]bool
-	cursor     int
-	query      string
-	filtering  bool
-	errorText  string
-	width      int
-	height     int
+	tree      *Tree
+	cursor    int
+	query     string
+	filtering bool
+	errorText string
+	width     int
+	height    int
 }
 
-func newSelector(components []Component) selectorModel {
-	selected := make(map[string]bool, len(components))
-	for _, component := range components {
-		selected[component.ID] = true
+func newSelector(items []Item) (selectorModel, error) {
+	tree, err := NewTree(items)
+	if err != nil {
+		return selectorModel{}, err
 	}
-	return selectorModel{
-		components: append([]Component(nil), components...),
-		selected:   selected,
-		width:      80,
-		height:     24,
-	}
+	return selectorModel{tree: tree, width: 80, height: 24}, nil
 }
 
 func (m selectorModel) selectedIDs() []string {
-	ids := make([]string, 0, len(m.selected))
-	for _, component := range m.components {
-		if m.selected[component.ID] {
-			ids = append(ids, component.ID)
-		}
-	}
-	return ids
+	return m.tree.SelectedIDs()
 }
 
 func (m selectorModel) filteredIndices() []int {
-	query := strings.ToLower(strings.TrimSpace(m.query))
-	indices := make([]int, 0, len(m.components))
-	for index, component := range m.components {
-		haystack := strings.ToLower(component.Title + " " + component.Description + " " + component.Category)
-		if query == "" || strings.Contains(haystack, query) {
-			indices = append(indices, index)
-		}
-	}
-	return indices
+	return m.tree.FilteredIndices(m.query)
 }
 
 func (m *selectorModel) clampCursor() {
@@ -124,21 +104,15 @@ func (m *selectorModel) handleKey(key string) selectorEvent {
 		}
 	case "space":
 		if len(indices) > 0 {
-			id := m.components[indices[m.cursor]].ID
-			m.selected[id] = !m.selected[id]
-			if !m.selected[id] {
-				delete(m.selected, id)
-			}
+			m.tree.Toggle(m.tree.Item(indices[m.cursor]).ID)
 		}
 	case "a":
-		for _, component := range m.components {
-			m.selected[component.ID] = true
-		}
+		m.tree.SelectAll()
 	case "n":
-		clear(m.selected)
+		m.tree.Clear()
 	case "enter":
-		if len(m.selected) == 0 {
-			m.errorText = "Select at least one component before continuing."
+		if m.tree.SelectedCount() == 0 {
+			m.errorText = "Select at least one item before continuing."
 			return selectorNone
 		}
 		return selectorSubmit
@@ -158,31 +132,38 @@ func (m selectorModel) view(profile string) string {
 	var body strings.Builder
 	lastCategory := ""
 	for visibleIndex := start; visibleIndex < end; visibleIndex++ {
-		component := m.components[indices[visibleIndex]]
-		if component.Category != lastCategory {
+		item := m.tree.Item(indices[visibleIndex])
+		depth := m.tree.Depth(item.ID)
+		if depth == 0 && item.Category != lastCategory {
 			if body.Len() > 0 {
 				body.WriteByte('\n')
 			}
-			body.WriteString(categoryStyle.Render(strings.ToUpper(component.Category)))
+			body.WriteString(categoryStyle.Render(strings.ToUpper(item.Category)))
 			body.WriteByte('\n')
-			lastCategory = component.Category
+			lastCategory = item.Category
 		}
-		cursor := "  "
+		cursor := strings.Repeat("  ", depth) + "  "
 		if visibleIndex == m.cursor {
-			cursor = accentStyle.Render("› ")
+			cursor = strings.Repeat("  ", depth) + accentStyle.Render("› ")
 		}
 		mark := " "
-		if m.selected[component.ID] {
+		switch m.tree.State(item.ID) {
+		case Selected:
 			mark = accentStyle.Render("✓")
+		case PartiallySelected:
+			mark = partialStyle.Render("~")
 		}
-		label := component.Title
-		if component.Description != "" {
-			label += mutedStyle.Render("  " + component.Description)
+		label := item.Title
+		if depth == 0 && len(m.tree.children[item.ID]) > 0 {
+			label = valueStyle.Render(label)
+		}
+		if item.Description != "" {
+			label += mutedStyle.Render("  " + item.Description)
 		}
 		body.WriteString(fmt.Sprintf("%s[%s] %s\n", cursor, mark, label))
 	}
 	if len(indices) == 0 {
-		body.WriteString(mutedStyle.Render("No components match this filter."))
+		body.WriteString(mutedStyle.Render("No items match this filter."))
 		body.WriteByte('\n')
 	}
 
@@ -201,8 +182,8 @@ func (m selectorModel) view(profile string) string {
 		position = fmt.Sprintf("  %d–%d of %d", start+1, end, len(indices))
 	}
 
-	header := titleStyle.Render("Select components") + "\n" +
-		fmt.Sprintf("Profile %s · %d of %d selected%s", valueStyle.Render(profile), len(m.selected), len(m.components), position)
+	header := titleStyle.Render("Select environment") + "\n" +
+		fmt.Sprintf("Profile %s · %d of %d items selected%s", valueStyle.Render(profile), m.tree.SelectedCount(), m.tree.SelectableCount(), position)
 	help := "↑/↓ move  space toggle  a all  n none  / filter  enter continue  q cancel"
 	return header + "\n\n" + body.String() + filter + errorLine + "\n" + mutedStyle.Render(help)
 }

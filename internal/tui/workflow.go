@@ -22,6 +22,7 @@ var (
 	valueStyle    = lipgloss.NewStyle().Bold(true)
 	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#777A90"))
 	kindStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8AADF4"))
+	partialStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EED49F"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ED8796"))
 	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A6DA95"))
 )
@@ -38,13 +39,17 @@ type workflowModel struct {
 	height    int
 }
 
-func newWorkflow(config Config) workflowModel {
+func newWorkflow(config Config) (workflowModel, error) {
+	selector, err := newSelector(config.Items)
+	if err != nil {
+		return workflowModel{}, err
+	}
 	return workflowModel{
 		config:   config,
-		selector: newSelector(config.Components),
+		selector: selector,
 		width:    80,
 		height:   24,
-	}
+	}, nil
 }
 
 func (m workflowModel) Init() tea.Cmd { return nil }
@@ -119,10 +124,14 @@ func (m workflowModel) View() tea.View {
 }
 
 func Run(input io.Reader, output io.Writer, config Config) (Result, error) {
-	if len(config.Components) == 0 {
-		return Result{}, fmt.Errorf("the selected profile has no components supported on this platform")
+	if len(config.Items) == 0 {
+		return Result{}, fmt.Errorf("the selected profile has no selectable items supported on this platform")
 	}
-	program := tea.NewProgram(newWorkflow(config), tea.WithInput(input), tea.WithOutput(output))
+	model, err := newWorkflow(config)
+	if err != nil {
+		return Result{}, err
+	}
+	program := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output))
 	finalModel, err := program.Run()
 	if err != nil {
 		return Result{}, err

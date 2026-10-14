@@ -267,6 +267,8 @@ codex:
       source: ai/skills/release-notes
 ```
 
+When `--select` is used, skills appear as children of their component and can be selected independently. A component that also contains packages, files, checks, Codex configuration, or MCP servers exposes those declarations as a separate `Component resources` child.
+
 ### MCP servers
 
 An HTTP server requires a URL:
@@ -298,7 +300,7 @@ See the official [Codex configuration reference](https://developers.openai.com/c
 
 `conenv plan` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `2` when actions are pending. Applying the same manifest twice is a no-op.
 
-Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive checklist containing the profile's components supported by the current platform. Components are selected by default. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation. The selection affects only that command and does not modify the profile.
+Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; individual Codex skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation. The selection affects only that command and does not modify the profile.
 
 Before replacing a destination, conenv stores its current contents under:
 

@@ -79,7 +79,7 @@ func (m previewModel) view() string {
 		position = fmt.Sprintf(" · showing %d–%d", m.scroll+1, end)
 	}
 	header := titleStyle.Render("Review plan") + "\n" +
-		fmt.Sprintf("Profile %s · %d components · %d actions%s", valueStyle.Render(m.plan.Profile), m.selected, len(m.plan.Actions), position)
+		fmt.Sprintf("Profile %s · %d selected items · %d actions%s", valueStyle.Render(m.plan.Profile), m.selected, len(m.plan.Actions), position)
 	help := fmt.Sprintf("↑/↓ scroll  esc back  enter %s  q cancel", m.confirmLabel)
 	return header + "\n\n" + body.String() + "\n" + mutedStyle.Render(help)
 }

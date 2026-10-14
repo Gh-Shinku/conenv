@@ -4,10 +4,12 @@ import "errors"
 
 var ErrCancelled = errors.New("interactive workflow cancelled")
 
-// Component is the presentation model used by the selector. It deliberately
-// contains no conenv domain types so the TUI can evolve independently.
-type Component struct {
+// Item is one node in the selector tree. ParentID is empty for a root item.
+// It deliberately contains no conenv domain types so the TUI can evolve
+// independently.
+type Item struct {
 	ID          string
+	ParentID    string
 	Category    string
 	Title       string
 	Description string
@@ -30,7 +32,7 @@ type PlanBuilder func(selectedIDs []string) (Plan, error)
 
 type Config struct {
 	Profile      string
-	Components   []Component
+	Items        []Item
 	Preview      bool
 	BuildPlan    PlanBuilder
 	ConfirmLabel string
