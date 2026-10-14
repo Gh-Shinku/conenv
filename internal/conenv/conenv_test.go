@@ -18,7 +18,7 @@ func TestLoadResolvesLayeredProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CONENV_TEST_SECRET", "value")
-	manifest := `schemaVersion: conenv/v1
+	manifest := `schemaVersion: conenv/v2
 defaultProfile: workstation
 variables:
   editor: vim
@@ -105,7 +105,7 @@ func TestRepositoryResolutionPrecedence(t *testing.T) {
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	root := t.TempDir()
-	manifest := "schemaVersion: conenv/v1\nprofiles: {}\ncomponents: {}\nsurprise: true\n"
+	manifest := "schemaVersion: conenv/v2\nprofiles: {}\ncomponents: {}\nsurprise: true\n"
 	if err := os.WriteFile(filepath.Join(root, "conenv.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 
 func TestLoadRejectsCycleInUnselectedProfile(t *testing.T) {
 	root := t.TempDir()
-	manifest := `schemaVersion: conenv/v1
+	manifest := `schemaVersion: conenv/v2
 defaultProfile: good
 profiles:
   good: {}
@@ -136,7 +136,7 @@ components: {}
 
 func TestLoadProfileTracksUnsupportedComponents(t *testing.T) {
 	root := t.TempDir()
-	manifest := `schemaVersion: conenv/v1
+	manifest := `schemaVersion: conenv/v2
 defaultProfile: base
 profiles:
   base:
@@ -282,7 +282,7 @@ func TestInspectStatusReportsEachComponent(t *testing.T) {
 	}
 }
 
-func TestCodexMergePreservesUnmanagedSettings(t *testing.T) {
+func TestAgentMergePreservesUnmanagedSettings(t *testing.T) {
 	home := t.TempDir()
 	codexDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(codexDir, 0o700); err != nil {
@@ -293,25 +293,34 @@ func TestCodexMergePreservesUnmanagedSettings(t *testing.T) {
 	}
 	resolved := &Resolved{
 		Variables: map[string]string{"home": home}, Secrets: map[string]SecretRef{},
-		Components: []NamedComponent{{Name: "ai", Component: Component{Codex: &Codex{
-			Config:     map[string]any{"approval_policy": "on-request"},
-			MCPServers: map[string]MCP{"docs": {Type: "http", URL: "https://developers.openai.com/mcp"}},
+		Components: []NamedComponent{{Name: "ai", Component: Component{Agents: map[string]Agent{
+			"codex": {
+				Name: "codex", Harness: "codex",
+				Config:     map[string]any{"approval_policy": "on-request"},
+				MCPServers: map[string]MCP{"docs": {Type: "http", URL: "https://developers.openai.com/mcp"}},
+			},
 		}}}},
 	}
-	data, _, err := desiredCodexConfig(resolved)
+	plan, err := BuildPlan(resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Kind != "agent_config" {
+		t.Fatalf("unexpected actions: %#v", plan.Actions)
+	}
 	var result map[string]any
-	if err := toml.Unmarshal(data, &result); err != nil {
+	if err := toml.Unmarshal(plan.Actions[0].Content, &result); err != nil {
 		t.Fatal(err)
 	}
 	if result["model"] != "keep-me" || result["approval_policy"] != "on-request" {
 		t.Fatalf("unmanaged or managed settings missing: %#v", result)
 	}
-	servers := result["mcp_servers"].(map[string]any)
-	if len(servers) != 2 {
-		t.Fatalf("expected both MCP servers, got %#v", servers)
+	servers, ok := result["mcp_servers"].(map[string]any)
+	if !ok || len(servers) != 2 {
+		t.Fatalf("expected both MCP servers, got %#v", result["mcp_servers"])
+	}
+	if !plan.Actions[0].Sensitive {
+		t.Fatal("agent configuration must be treated as sensitive")
 	}
 }
 
@@ -329,7 +338,7 @@ func assertFileContent(t *testing.T, path, expected string) {
 func createTestRepository(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	manifest := "schemaVersion: conenv/v1\ndefaultProfile: base\nprofiles:\n  base: {}\ncomponents: {}\n"
+	manifest := "schemaVersion: conenv/v2\ndefaultProfile: base\nprofiles:\n  base: {}\ncomponents: {}\n"
 	if err := os.WriteFile(filepath.Join(root, "conenv.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

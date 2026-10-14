@@ -108,29 +108,21 @@ func isInteractive() bool {
 
 type repositoryFlags struct {
 	repo    string
-	root    string
 	profile string
 	json    bool
 }
 
 func (flags *repositoryFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&flags.repo, "repo", "", "configuration repository")
-	fs.StringVar(&flags.root, "root", "", "deprecated alias for --repo")
 	fs.StringVar(&flags.profile, "profile", "", "profile name")
 	fs.BoolVar(&flags.json, "json", false, "emit JSON")
 }
 
 func (flags repositoryFlags) repository() string {
-	if flags.repo != "" {
-		return flags.repo
-	}
-	return flags.root
+	return flags.repo
 }
 
 func (flags repositoryFlags) validate() error {
-	if flags.repo != "" && flags.root != "" {
-		return errors.New("use only one of --repo and --root")
-	}
 	return nil
 }
 
@@ -261,18 +253,40 @@ type configOptions struct {
 	componentDetail string
 	profiles        bool
 	components      bool
+	listAgents      bool
 	unsetSelection  bool
 	write           string
 }
 
 type scopeView struct {
-	Profile         string   `json:"profile"`
-	Default         bool     `json:"default"`
-	DefaultProfile  string   `json:"defaultProfile,omitempty"`
-	Components      []string `json:"components"`
-	Skipped         []string `json:"skipped,omitempty"`
-	SelectionSource string   `json:"selectionSource,omitempty"`
-	SelectionPath   string   `json:"selectionPath,omitempty"`
+	Profile         string      `json:"profile"`
+	Default         bool        `json:"default"`
+	DefaultProfile  string      `json:"defaultProfile,omitempty"`
+	Components      []string    `json:"components"`
+	Skipped         []string    `json:"skipped,omitempty"`
+	SelectionSource string      `json:"selectionSource,omitempty"`
+	SelectionPath   string      `json:"selectionPath,omitempty"`
+	Agents          []agentView `json:"agents,omitempty"`
+}
+
+type agentView struct {
+	Component  string `json:"component"`
+	Agent      string `json:"agent"`
+	Harness    string `json:"harness"`
+	ConfigPath string `json:"configPath,omitempty"`
+	SkillsDir  string `json:"skillsDir,omitempty"`
+	Skills     int    `json:"skills"`
+}
+
+// adapterView describes a registered harness adapter and where it writes by
+// default, which answers "what does conenv know about my agents".
+type adapterView struct {
+	Harness     string   `json:"harness"`
+	ConfigPath  string   `json:"configPath"`
+	SkillsDir   string   `json:"skillsDir"`
+	ConfigKeys  []string `json:"configKeys,omitempty"`
+	ConfigReady bool     `json:"configReady"`
+	SkillsReady bool     `json:"skillsReady"`
 }
 
 type configReport struct {
@@ -284,6 +298,7 @@ type configReport struct {
 	Scope           *scopeView      `json:"scope,omitempty"`
 	Profiles        []profileInfo   `json:"profiles,omitempty"`
 	Components      []componentInfo `json:"components,omitempty"`
+	Adapters        []adapterView   `json:"adapters,omitempty"`
 	detail          bool
 }
 
@@ -315,6 +330,7 @@ func runConfig(args []string) int {
 	fs.StringVar(&options.componentDetail, "component-detail", "", "show a component declaration")
 	fs.BoolVar(&options.profiles, "profiles", false, "list profiles")
 	fs.BoolVar(&options.components, "components", false, "list components")
+	fs.BoolVar(&options.listAgents, "list-agents", false, "list registered agent harnesses and their global paths")
 	fs.BoolVar(&options.unsetSelection, "unset-selection", false, "clear the saved default selection")
 	fs.StringVar(&options.write, "write", "", "write the saved selection to a file")
 	if err := fs.Parse(args); err != nil {
@@ -462,6 +478,9 @@ func buildConfigReport(selection conenv.RepositorySelection, options configOptio
 	if options.components {
 		report.Components = listComponents(manifest)
 	}
+	if options.listAgents {
+		report.Adapters = listAdapters()
+	}
 	resolved, origin, err := loadScope(selection.Path, scopeFlags{}, options.profile, true)
 	if err != nil {
 		return report, err
@@ -469,6 +488,7 @@ func buildConfigReport(selection conenv.RepositorySelection, options configOptio
 	view := profileView(resolved)
 	view.DefaultProfile = manifest.DefaultProfile
 	view.SelectionSource = scopeSourceLabel(origin)
+	view.Agents = agentViews(resolved)
 	if saved, _ := conenv.LoadDefaultSelection(); saved != nil {
 		if path, err := conenv.SavedSelectionPath(); err == nil {
 			view.SelectionPath = path
@@ -478,6 +498,29 @@ func buildConfigReport(selection conenv.RepositorySelection, options configOptio
 	report.SelectionPath = view.SelectionPath
 	report.Scope = view
 	return report, nil
+}
+
+// listAdapters reports every registered harness together with the global paths
+// it targets and whether those directories exist on this machine.
+func listAdapters() []adapterView {
+	home, _ := os.UserHomeDir()
+	views := make([]adapterView, 0)
+	for _, adapter := range conenv.Adapters() {
+		view := adapterView{
+			Harness:    adapter.Harness(),
+			ConfigPath: adapter.DefaultConfigPath(home),
+			SkillsDir:  adapter.DefaultSkillsDir(home),
+			ConfigKeys: adapter.AllowedConfigKeys(),
+		}
+		if _, err := os.Stat(filepath.Dir(view.ConfigPath)); err == nil {
+			view.ConfigReady = true
+		}
+		if _, err := os.Stat(filepath.Dir(view.SkillsDir)); err == nil {
+			view.SkillsReady = true
+		}
+		views = append(views, view)
+	}
+	return views
 }
 
 func profileDetailReport(selection conenv.RepositorySelection, options configOptions) (configReport, error) {
@@ -553,6 +596,25 @@ func printConfigReport(report configReport) {
 		if len(report.Scope.Skipped) > 0 {
 			fmt.Printf("skipped: %s\n", strings.Join(report.Scope.Skipped, ", "))
 		}
+		if len(report.Scope.Agents) > 0 {
+			fmt.Println("agents:")
+			for _, agent := range report.Scope.Agents {
+				fmt.Printf("- %s/%s [%s] skills=%d", agent.Component, agent.Agent, agent.Harness, agent.Skills)
+				if agent.ConfigPath != "" {
+					fmt.Printf(" config=%s", agent.ConfigPath)
+				}
+				if agent.SkillsDir != "" {
+					fmt.Printf(" skillsDir=%s", agent.SkillsDir)
+				}
+				fmt.Println()
+			}
+		}
+	}
+	if len(report.Adapters) > 0 {
+		fmt.Println("harnesses:")
+		for _, adapter := range report.Adapters {
+			fmt.Printf("- %s config=%s (%s) skillsDir=%s (%s)\n", adapter.Harness, adapter.ConfigPath, presence(adapter.ConfigReady), adapter.SkillsDir, presence(adapter.SkillsReady))
+		}
 	}
 	if len(report.Profiles) > 0 {
 		fmt.Println("profiles:")
@@ -572,8 +634,16 @@ func printConfigReport(report configReport) {
 				state = "unsupported"
 			}
 			fmt.Printf("- %s [%s, %s] packages=%d files=%d checks=%d", component.Name, component.Category, state, len(component.Declaration.Packages), len(component.Declaration.Files), len(component.Declaration.Checks))
-			if component.Declaration.Codex != nil {
-				fmt.Printf(" skills=%d mcpServers=%d", len(component.Declaration.Codex.Skills), len(component.Declaration.Codex.MCPServers))
+			if len(component.Declaration.Agents) > 0 {
+				names := make([]string, 0, len(component.Declaration.Agents))
+				for name := range component.Declaration.Agents {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					agent := component.Declaration.Agents[name]
+					fmt.Printf(" agent:%s[%s]", name, agent.Harness)
+				}
 			}
 			if component.Description != "" {
 				fmt.Printf(": %s", component.Description)
@@ -581,6 +651,13 @@ func printConfigReport(report configReport) {
 			fmt.Println()
 		}
 	}
+}
+
+func presence(exists bool) string {
+	if exists {
+		return "present"
+	}
+	return "missing"
 }
 
 // printDetail renders the single profile or component requested by
@@ -595,8 +672,14 @@ func printDetail(report configReport) {
 	for _, component := range report.Components {
 		declaration := component.Declaration
 		fmt.Printf("component: %s\ncategory: %s\nsupported: %t\ndescription: %s\npackages: %d\nfiles: %d\nchecks: %d\n", component.Name, component.Category, component.Supported, component.Description, len(declaration.Packages), len(declaration.Files), len(declaration.Checks))
-		if declaration.Codex != nil {
-			fmt.Printf("skills: %d\nmcp servers: %d\n", len(declaration.Codex.Skills), len(declaration.Codex.MCPServers))
+		names := make([]string, 0, len(declaration.Agents))
+		for name := range declaration.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			agent := declaration.Agents[name]
+			fmt.Printf("agent: %s\n  harness: %s\n  skills: %d\n  mcp servers: %d\n  config keys: %d\n", name, agent.Harness, len(agent.Skills), len(agent.MCPServers), len(agent.Config))
 		}
 	}
 }
@@ -1052,7 +1135,7 @@ func presentComponent(name string, component conenv.Component, declaration bool)
 	category := component.Category
 	if category == "" {
 		category = "program"
-		if component.Codex != nil && len(component.Files) == 0 && len(component.Packages) == 0 {
+		if len(component.Agents) > 0 && len(component.Files) == 0 && len(component.Packages) == 0 {
 			category = "ai"
 		}
 	}
@@ -1087,9 +1170,19 @@ func selectionSpecFromResolved(resolved *conenv.Resolved) (*conenv.SelectionSpec
 		if conenv.HasComponentResources(component.Component) {
 			targets = append(targets, component.Name+"/resources")
 		}
-		if component.Codex != nil {
-			for _, skill := range component.Codex.Skills {
-				targets = append(targets, component.Name+"/skills/"+skill.Name)
+		names := make([]string, 0, len(component.Agents))
+		for name := range component.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			agent := component.Agents[name]
+			prefix := component.Name + "/agents/" + name
+			if agent.ManagesConfig() {
+				targets = append(targets, prefix+"/resources")
+			}
+			for _, skill := range agent.Skills {
+				targets = append(targets, prefix+"/skills/"+skill.Name)
 			}
 		}
 	}
@@ -1097,6 +1190,37 @@ func selectionSpecFromResolved(resolved *conenv.Resolved) (*conenv.SelectionSpec
 		return nil, errors.New("the selected scope contains no selectable resources")
 	}
 	return conenv.SelectionFromTargets(resolved, targets)
+}
+
+// agentViews describes the agents a scope reaches, for config reporting.
+func agentViews(resolved *conenv.Resolved) []agentView {
+	var views []agentView
+	for _, component := range resolved.Components {
+		names := make([]string, 0, len(component.Agents))
+		for name := range component.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			agent := component.Agents[name]
+			view := agentView{
+				Component: component.Name, Agent: name, Harness: agent.Harness,
+				Skills: len(agent.Skills),
+			}
+			if agent.ManagesConfig() {
+				if path, err := conenv.AgentConfigPath(resolved, agent); err == nil {
+					view.ConfigPath = path
+				}
+			}
+			if len(agent.Skills) > 0 {
+				if dir, err := conenv.AgentSkillsDir(resolved, agent); err == nil {
+					view.SkillsDir = dir
+				}
+			}
+			views = append(views, view)
+		}
+	}
+	return views
 }
 
 func printPlan(plan *conenv.Plan, origin scopeOrigin) error {

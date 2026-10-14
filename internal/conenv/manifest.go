@@ -133,6 +133,11 @@ func LoadManifest(root string) (*Manifest, error) {
 	if err := validateManifest(base, absRoot); err != nil {
 		return nil, err
 	}
+	for name := range base.Components {
+		component := base.Components[name]
+		namedAgents(&component)
+		base.Components[name] = component
+	}
 	return base, nil
 }
 
@@ -265,25 +270,34 @@ func validateManifest(m *Manifest, root string) error {
 				problems = append(problems, fmt.Sprintf("component %q file %d requires source, target, and mode link or render", name, i))
 			}
 		}
-		if c.Codex != nil {
-			seenSkills := map[string]bool{}
-			for _, skill := range c.Codex.Skills {
-				if skill.Name == "" || skill.Source == "" {
-					problems = append(problems, fmt.Sprintf("component %q has an invalid Codex skill", name))
+		if len(c.Agents) > 0 {
+			agentNames := make([]string, 0, len(c.Agents))
+			for agentName := range c.Agents {
+				agentNames = append(agentNames, agentName)
+			}
+			sort.Strings(agentNames)
+			for _, agentName := range agentNames {
+				agent := c.Agents[agentName]
+				if !validAgentName(agentName) {
+					problems = append(problems, fmt.Sprintf("component %q has an invalid agent name %q", name, agentName))
+				}
+				if agent.Harness == "" {
+					problems = append(problems, fmt.Sprintf("component %q agent %q requires harness", name, agentName))
 					continue
 				}
-				if seenSkills[skill.Name] {
-					problems = append(problems, fmt.Sprintf("component %q repeats Codex skill %q", name, skill.Name))
+				if err := ValidateAgent(agent); err != nil {
+					problems = append(problems, fmt.Sprintf("component %q agent %q: %v", name, agentName, err))
 				}
-				seenSkills[skill.Name] = true
-			}
-			for serverName, server := range c.Codex.MCPServers {
-				if server.Type == "http" && server.URL == "" {
-					problems = append(problems, fmt.Sprintf("MCP server %q requires url", serverName))
-				} else if server.Type == "stdio" && server.Command == "" {
-					problems = append(problems, fmt.Sprintf("MCP server %q requires command", serverName))
-				} else if server.Type != "http" && server.Type != "stdio" {
-					problems = append(problems, fmt.Sprintf("MCP server %q type must be http or stdio", serverName))
+				seenSkills := map[string]bool{}
+				for _, skill := range agent.Skills {
+					if !validAgentName(skill.Name) || skill.Source == "" {
+						problems = append(problems, fmt.Sprintf("component %q agent %q has an invalid skill", name, agentName))
+						continue
+					}
+					if seenSkills[skill.Name] {
+						problems = append(problems, fmt.Sprintf("component %q agent %q repeats skill %q", name, agentName, skill.Name))
+					}
+					seenSkills[skill.Name] = true
 				}
 			}
 		}
@@ -327,18 +341,16 @@ func ValidateScope(r *Resolved) error {
 	targets := map[string]string{}
 	skills := map[string]string{}
 	servers := map[string]string{}
+	type skillSource struct {
+		component string
+		skill     string
+		source    string
+	}
+	var skillSources []skillSource
 	for _, component := range r.Components {
+		// Ownership conflicts are collected first so a conflict is always
+		// reported, even when a source path is missing.
 		for _, file := range component.Files {
-			source, err := expandPath(file.Source, r)
-			if err != nil {
-				return fmt.Errorf("component %q source: %w", component.Name, err)
-			}
-			if !filepath.IsAbs(source) {
-				source = filepath.Join(r.Root, source)
-			}
-			if _, err := os.Stat(source); err != nil {
-				return fmt.Errorf("component %q source %q: %w", component.Name, file.Source, err)
-			}
 			target, err := expandPath(file.Target, r)
 			if err != nil {
 				return fmt.Errorf("component %q target: %w", component.Name, err)
@@ -351,30 +363,68 @@ func ValidateScope(r *Resolved) error {
 			}
 			targets[target] = component.Name
 		}
-		if component.Codex == nil {
-			continue
-		}
-		for _, skill := range component.Codex.Skills {
-			if owner, exists := skills[skill.Name]; exists {
-				return fmt.Errorf("Codex skill %q is managed by both %q and %q", skill.Name, owner, component.Name)
+		for _, agentName := range agentNames(component.Component) {
+			agent := component.Agents[agentName]
+			agent.Name = agentName
+			if agent.ManagesConfig() {
+				target, err := AgentConfigPath(r, agent)
+				if err != nil {
+					return fmt.Errorf("component %q: %w", component.Name, err)
+				}
+				if owner, exists := targets[target]; exists {
+					return fmt.Errorf("target %q is managed by both %q and %q", target, owner, component.Name)
+				}
+				targets[target] = component.Name
 			}
-			skills[skill.Name] = component.Name
-			source, err := expandPath(skill.Source, r)
+			if len(agent.Skills) > 0 {
+				skillsDir, err := AgentSkillsDir(r, agent)
+				if err != nil {
+					return fmt.Errorf("component %q: %w", component.Name, err)
+				}
+				for _, skill := range agent.Skills {
+					target := filepath.Join(skillsDir, skill.Name)
+					if owner, exists := skills[target]; exists {
+						return fmt.Errorf("skill %q is managed by both %q and %q", target, owner, component.Name)
+					}
+					skills[target] = component.Name
+					source, err := expandPath(skill.Source, r)
+					if err != nil {
+						return fmt.Errorf("skill %q: %w", skill.Name, err)
+					}
+					skillSources = append(skillSources, skillSource{component: component.Name, skill: skill.Name, source: source})
+				}
+			}
+			for name := range agent.MCPServers {
+				key := agent.Name + "\x00" + name
+				if owner, exists := servers[key]; exists {
+					return fmt.Errorf("MCP server %q is managed by both %q and %q", name, owner, component.Name)
+				}
+				servers[key] = component.Name
+			}
+		}
+	}
+	// Sources are checked after ownership so a conflict always surfaces first.
+	for _, component := range r.Components {
+		for _, file := range component.Files {
+			source, err := expandPath(file.Source, r)
 			if err != nil {
-				return fmt.Errorf("Codex skill %q: %w", skill.Name, err)
+				return fmt.Errorf("component %q source: %w", component.Name, err)
 			}
 			if !filepath.IsAbs(source) {
 				source = filepath.Join(r.Root, source)
 			}
-			if _, err := os.Stat(filepath.Join(source, "SKILL.md")); err != nil {
-				return fmt.Errorf("Codex skill %q: %w", skill.Name, err)
+			if _, err := os.Stat(source); err != nil {
+				return fmt.Errorf("component %q source %q: %w", component.Name, file.Source, err)
 			}
 		}
-		for name := range component.Codex.MCPServers {
-			if owner, exists := servers[name]; exists {
-				return fmt.Errorf("MCP server %q is managed by both %q and %q", name, owner, component.Name)
-			}
-			servers[name] = component.Name
+	}
+	for _, entry := range skillSources {
+		source := entry.source
+		if !filepath.IsAbs(source) {
+			source = filepath.Join(r.Root, source)
+		}
+		if _, err := os.Stat(filepath.Join(source, "SKILL.md")); err != nil {
+			return fmt.Errorf("skill %q: %w", entry.skill, err)
 		}
 	}
 	return nil

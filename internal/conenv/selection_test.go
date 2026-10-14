@@ -8,15 +8,22 @@ import (
 	"testing"
 )
 
-func TestSelectionRoundTripAndApply(t *testing.T) {
-	resolved := &Resolved{Profile: "personal", Components: []NamedComponent{
+func selectionTestRepository() *Resolved {
+	return &Resolved{Profile: "personal", Components: []NamedComponent{
 		{Name: "git", Component: Component{Files: []ManagedFile{{Source: "gitconfig", Target: "C:/gitconfig", Mode: "link"}}}},
-		{Name: "codex", Component: Component{Codex: &Codex{
-			Config: map[string]any{"model": "example"},
-			Skills: []Skill{{Name: "project-bootstrap", Source: "project"}, {Name: "vibe-bootstrap", Source: "vibe"}},
+		{Name: "ai-agents", Component: Component{Agents: map[string]Agent{
+			"codex": {
+				Name: "codex", Harness: "codex",
+				Config: map[string]any{"model": "example"},
+				Skills: []Skill{{Name: "project-bootstrap", Source: "project"}, {Name: "vibe-bootstrap", Source: "vibe"}},
+			},
 		}}},
 	}}
-	spec, err := SelectionFromTargets(resolved, []string{"git", "codex/skills/vibe-bootstrap"})
+}
+
+func TestSelectionRoundTripAndApply(t *testing.T) {
+	resolved := selectionTestRepository()
+	spec, err := SelectionFromTargets(resolved, []string{"git", "ai-agents/agents/codex/skills/vibe-bootstrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,23 +42,73 @@ func TestSelectionRoundTripAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filtered.Components) != 2 || len(filtered.Components[1].Codex.Skills) != 1 || filtered.Components[1].Codex.Skills[0].Name != "vibe-bootstrap" {
+	if len(filtered.Components) != 2 {
 		t.Fatalf("filtered profile = %#v", filtered.Components)
 	}
-	if len(filtered.Components[1].Codex.Config) != 0 {
-		t.Fatalf("skill-only selection retained component resources: %#v", filtered.Components[1].Codex.Config)
+	agent, ok := filtered.Components[1].Agents["codex"]
+	if !ok {
+		t.Fatalf("agent was dropped by the selection: %#v", filtered.Components[1])
+	}
+	if len(agent.Skills) != 1 || agent.Skills[0].Name != "vibe-bootstrap" {
+		t.Fatalf("skill-only selection = %#v", agent.Skills)
+	}
+	if len(agent.Config) != 0 {
+		t.Fatalf("skill-only selection retained agent resources: %#v", agent.Config)
+	}
+}
+
+func TestSelectionSelectsWholeComponentAndAgent(t *testing.T) {
+	resolved := selectionTestRepository()
+	spec, err := SelectionFromTargets(resolved, []string{"ai-agents"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 2 {
+		t.Fatalf("whole component selection = %#v", selected)
+	}
+
+	spec, err = SelectionFromTargets(resolved, []string{"ai-agents/agents/codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 2 {
+		t.Fatalf("whole agent selection = %#v", selected)
+	}
+
+	spec, err = SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/resources"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := spec.Components["ai-agents"]
+	if !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 0 {
+		t.Fatalf("resource-only agent selection = %#v", selected)
+	}
+}
+
+func TestSelectionRejectsUnknownTargets(t *testing.T) {
+	resolved := selectionTestRepository()
+	for _, target := range []string{
+		"missing",
+		"ai-agents/skills/vibe-bootstrap",
+		"ai-agents/agents/claude",
+		"ai-agents/agents/codex/skills/missing",
+		"ai-agents/agents/codex/mcpServers/x",
+	} {
+		if _, err := SelectionFromTargets(resolved, []string{target}); err == nil {
+			t.Fatalf("expected target %q to fail", target)
+		}
 	}
 }
 
 func TestSelectionRejectsUnknownAndDuplicateSkills(t *testing.T) {
-	resolved := &Resolved{Profile: "personal", Components: []NamedComponent{{
-		Name: "codex", Component: Component{Codex: &Codex{Skills: []Skill{{Name: "one", Source: "one"}}}},
-	}}}
+	resolved := selectionTestRepository()
 	for _, spec := range []*SelectionSpec{
-		{SchemaVersion: SelectionSchemaVersion, Profile: "other", Components: map[string]ComponentSelection{"codex": {Skills: []string{"one"}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "other", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"project-bootstrap"}}}}}},
 		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"missing": {Resources: true}}},
-		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"codex": {Skills: []string{"one", "one"}}}},
-		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"codex": {Skills: []string{"missing"}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"project-bootstrap", "project-bootstrap"}}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"missing"}}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"claude": {Resources: true}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {}}},
 	} {
 		if _, err := ApplySelection(resolved, spec); err == nil {
 			t.Fatalf("expected invalid selection to fail: %#v", spec)
@@ -59,9 +116,35 @@ func TestSelectionRejectsUnknownAndDuplicateSkills(t *testing.T) {
 	}
 }
 
+func TestSelectionAgentResourcesSelectsConfigOnly(t *testing.T) {
+	resolved := selectionTestRepository()
+	spec := &SelectionSpec{
+		SchemaVersion: SelectionSchemaVersion, Profile: "personal",
+		Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Resources: true}}}},
+	}
+	filtered, err := ApplySelection(resolved, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filtered.Components[0].Agents["codex"]
+	if len(agent.Config) == 0 || len(agent.Skills) != 0 {
+		t.Fatalf("resource-only selection = %#v", agent)
+	}
+}
+
+func TestHasComponentResourcesIgnoresAgents(t *testing.T) {
+	component := Component{Agents: map[string]Agent{"codex": {Name: "codex", Harness: "codex", Skills: []Skill{{Name: "one", Source: "one"}}}}}
+	if HasComponentResources(component) {
+		t.Fatal("agent declarations are not component resources")
+	}
+}
+
 func TestNarrowedScopeSkipsUnselectedRuntimePrerequisites(t *testing.T) {
 	root := t.TempDir()
-	manifest := `schemaVersion: conenv/v1
+	if err := os.WriteFile(filepath.Join(root, "selected"), []byte("selected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schemaVersion: conenv/v2
 defaultProfile: personal
 secrets:
   unused:
@@ -70,7 +153,11 @@ profiles:
   personal:
     components: [good, broken]
 components:
-  good: {}
+  good:
+    files:
+      - source: selected
+        target: '{{ .home }}/selected'
+        mode: link
   broken:
     files:
       - source: missing-file

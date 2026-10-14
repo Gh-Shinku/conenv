@@ -49,9 +49,9 @@ func expandString(value string, vars map[string]string, secrets map[string]Secre
 		return "", err
 	}
 	result := output.String()
-	if strings.HasPrefix(result, "~"+string(filepath.Separator)) || result == "~" {
+	if strings.HasPrefix(result, "~/") || strings.HasPrefix(result, `~\`) {
 		home := vars["home"]
-		result = filepath.Join(home, strings.TrimPrefix(result, "~"+string(filepath.Separator)))
+		result = filepath.Join(home, result[2:])
 	}
 	return result, nil
 }

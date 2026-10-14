@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -65,9 +66,9 @@ func applyFilesystemAction(action Action) error {
 		return err
 	}
 	switch action.Kind {
-	case "link", "link_skill":
+	case "link", "agent_skill":
 		return os.Symlink(action.Source, action.Target)
-	case "render", "codex_config":
+	case "render", "agent_config":
 		mode := os.FileMode(0o644)
 		if action.Sensitive {
 			mode = 0o600
@@ -94,10 +95,32 @@ func backupTarget(target, backupRoot string) (BackupRecord, error) {
 	if err := copyEntry(target, record.Backup); err != nil {
 		return record, err
 	}
-	if err := os.RemoveAll(target); err != nil {
-		return record, err
+	return record, removeEntry(target)
+}
+
+// readLink reports the target of any link-like entry. On Windows a directory
+// junction reports neither a symbolic link mode nor a directory mode, so
+// probing with Readlink is the portable way to recognize one.
+func readLink(path string) (string, bool) {
+	target, err := os.Readlink(path)
+	if err != nil || target == "" {
+		return "", false
 	}
-	return record, nil
+	// Windows returns junction targets with a \\?\Global\ prefix that must be
+	// removed before the link can be recreated.
+	if prefix := `\\?\Global\`; strings.HasPrefix(target, prefix) {
+		target = target[len(prefix):]
+	}
+	return target, true
+}
+
+// removeEntry deletes an entry without following a link. A junction or symlink
+// is removed as a link so the directory it points at survives.
+func removeEntry(path string) error {
+	if _, ok := readLink(path); ok {
+		return os.Remove(path)
+	}
+	return os.RemoveAll(path)
 }
 
 func Restore(runID string) error {
@@ -327,11 +350,9 @@ func copyEntry(source, target string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		link, err := os.Readlink(source)
-		if err != nil {
-			return err
-		}
+	if link, ok := readLink(source); ok {
+		// Recreate the link rather than copying whatever it points at, so a
+		// restored entry keeps the same target.
 		return os.Symlink(link, target)
 	}
 	if info.IsDir() {
@@ -345,13 +366,7 @@ func copyEntry(source, target string) error {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
 			childSource := filepath.Join(source, entry.Name())
-			// ReadDir follows a directory symlink far enough to list it, so
-			// preserve nested links as links instead of copying the target.
-			if entry.Type()&os.ModeSymlink != 0 {
-				link, err := os.Readlink(childSource)
-				if err != nil {
-					return err
-				}
+			if link, ok := readLink(childSource); ok {
 				if err := os.Symlink(link, filepath.Join(target, entry.Name())); err != nil {
 					return err
 				}

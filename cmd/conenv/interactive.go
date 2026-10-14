@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,12 +28,15 @@ type selectionTargetKind int
 const (
 	selectComponent selectionTargetKind = iota
 	selectComponentResources
+	selectAgent
+	selectAgentResources
 	selectSkill
 )
 
 type selectionTarget struct {
 	component string
 	kind      selectionTargetKind
+	agent     string
 	skill     string
 }
 
@@ -197,8 +201,12 @@ func selectionFromIDs(resolved *conenv.Resolved, selectedIDs []string) (*conenv.
 			targets = append(targets, target.component)
 		case selectComponentResources:
 			targets = append(targets, target.component+"/resources")
+		case selectAgent:
+			targets = append(targets, target.component+"/agents/"+target.agent)
+		case selectAgentResources:
+			targets = append(targets, target.component+"/agents/"+target.agent+"/resources")
 		case selectSkill:
-			targets = append(targets, target.component+"/skills/"+target.skill)
+			targets = append(targets, target.component+"/agents/"+target.agent+"/skills/"+target.skill)
 		}
 	}
 	return conenv.SelectionFromTargets(resolved, targets)
@@ -232,13 +240,7 @@ func componentOptions(resolved *conenv.Resolved) []componentOption {
 	options := make([]componentOption, 0, len(resolved.Components))
 	for _, category := range []string{"program", "ai"} {
 		for componentIndex, component := range resolved.Components {
-			componentCategory := component.Category
-			if componentCategory == "" {
-				componentCategory = "program"
-				if component.Codex != nil && len(component.Files) == 0 && len(component.Packages) == 0 {
-					componentCategory = "ai"
-				}
-			}
+			componentCategory := componentCategory(component)
 			if componentCategory == category {
 				options = append(options, componentOption{componentIndex: componentIndex, name: component.Name, category: category, description: component.Description})
 			}
@@ -247,38 +249,73 @@ func componentOptions(resolved *conenv.Resolved) []componentOption {
 	return options
 }
 
+// componentCategory reports the display group of a component. An agent-only
+// component counts as AI even when it does not declare a category.
+func componentCategory(component conenv.NamedComponent) string {
+	if component.Category != "" {
+		return component.Category
+	}
+	if len(component.Agents) > 0 && len(component.Files) == 0 && len(component.Packages) == 0 {
+		return "ai"
+	}
+	return "program"
+}
+
 func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
 	catalog := selectionCatalog{targets: make(map[string]selectionTarget)}
 	for _, option := range componentOptions(resolved) {
 		component := resolved.Components[option.componentIndex]
 		rootID := "component:" + component.Name
-		skills := []conenv.Skill(nil)
-		if component.Codex != nil {
-			skills = component.Codex.Skills
-		}
 		catalog.items = append(catalog.items, tui.Item{
 			ID: rootID, Title: option.name, Category: option.category, Description: option.description,
 		})
-		if len(skills) == 0 {
+		agents := sortedAgents(component)
+		if len(agents) == 0 {
 			catalog.targets[rootID] = selectionTarget{component: component.Name, kind: selectComponent}
 			continue
 		}
 		if hasComponentResources(component.Component) {
 			baseID := rootID + ":resources"
 			catalog.items = append(catalog.items, tui.Item{
-				ID: baseID, ParentID: rootID, Title: "Component resources", Description: "Packages, files, configuration, and checks",
+				ID: baseID, ParentID: rootID, Title: "Component resources", Description: "Packages, files, and checks",
 			})
 			catalog.targets[baseID] = selectionTarget{component: component.Name, kind: selectComponentResources}
 		}
-		for _, skill := range skills {
-			skillID := fmt.Sprintf("%s:skill:%s", rootID, skill.Name)
+		for _, name := range agents {
+			agent := component.Agents[name]
+			agentID := fmt.Sprintf("%s:agent:%s", rootID, name)
 			catalog.items = append(catalog.items, tui.Item{
-				ID: skillID, ParentID: rootID, Title: skill.Name, Description: "Codex skill",
+				ID: agentID, ParentID: rootID, Title: name, Description: "Agent (harness " + agent.Harness + ")",
 			})
-			catalog.targets[skillID] = selectionTarget{component: component.Name, kind: selectSkill, skill: skill.Name}
+			catalog.targets[agentID] = selectionTarget{component: component.Name, kind: selectAgent, agent: name}
+			if agent.ManagesConfig() {
+				configID := agentID + ":resources"
+				catalog.items = append(catalog.items, tui.Item{
+					ID: configID, ParentID: agentID, Title: "Agent resources", Description: "Configuration and MCP servers",
+				})
+				catalog.targets[configID] = selectionTarget{component: component.Name, kind: selectAgentResources, agent: name}
+			}
+			for _, skill := range agent.Skills {
+				skillID := fmt.Sprintf("%s:skill:%s", agentID, skill.Name)
+				catalog.items = append(catalog.items, tui.Item{
+					ID: skillID, ParentID: agentID, Title: skill.Name, Description: "Skill",
+				})
+				catalog.targets[skillID] = selectionTarget{component: component.Name, kind: selectSkill, agent: name, skill: skill.Name}
+			}
 		}
 	}
 	return catalog
+}
+
+// sortedAgents lists an agent declaration name by sorted name so the checklist
+// order is stable.
+func sortedAgents(component conenv.NamedComponent) []string {
+	names := make([]string, 0, len(component.Agents))
+	for name := range component.Agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func hasComponentResources(component conenv.Component) bool {

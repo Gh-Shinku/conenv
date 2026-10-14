@@ -29,10 +29,15 @@ func TestParseSelection(t *testing.T) {
 	}
 }
 
+// testAgent builds an agent declaration for presentation tests.
+func testAgent(harness string, config map[string]any, mcp map[string]conenv.MCP, skills ...conenv.Skill) map[string]conenv.Agent {
+	return map[string]conenv.Agent{harness: {Name: harness, Harness: harness, Config: config, MCPServers: mcp, Skills: skills}}
+}
+
 func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
-		{Name: "skills", Component: conenv.Component{Category: "ai", Description: "Shared skills", Codex: &conenv.Codex{}}},
-		{Name: "shell", Component: conenv.Component{Category: "program", Description: "Shell config"}},
+		{Name: "skills", Component: conenv.Component{Category: "ai", Description: "Shared skills", Agents: testAgent("codex", nil, nil)}},
+		{Name: "shell", Component: conenv.Component{Category: "program", Description: "Shell config", Files: []conenv.ManagedFile{{Source: "shell", Target: "/shell", Mode: "link"}}}},
 		{Name: "vim", Component: conenv.Component{Category: "program"}},
 	}}
 	var output bytes.Buffer
@@ -50,11 +55,11 @@ func TestChooseComponentsGroupsAndFilters(t *testing.T) {
 
 func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
-		{Name: "skills", Component: conenv.Component{Codex: &conenv.Codex{Skills: []conenv.Skill{
-			{Name: "project-bootstrap", Source: "project"},
-			{Name: "vibe-bootstrap", Source: "vibe"},
-		}}}},
-		{Name: "shell"},
+		{Name: "skills", Component: conenv.Component{Agents: testAgent("codex", nil, nil,
+			conenv.Skill{Name: "project-bootstrap", Source: "project"},
+			conenv.Skill{Name: "vibe-bootstrap", Source: "vibe"},
+		)}},
+		{Name: "shell", Component: conenv.Component{Files: []conenv.ManagedFile{{Source: "shell", Target: "/shell", Mode: "link"}}}},
 		{Name: "vim"},
 	}}
 	catalog := newSelectionCatalog(resolved)
@@ -71,7 +76,7 @@ func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 	if got := []string{filtered.Components[0].Name, filtered.Components[1].Name}; !reflect.DeepEqual(got, []string{"skills", "shell"}) {
 		t.Fatalf("filtered order = %v", got)
 	}
-	if got := filtered.Components[0].Codex.Skills; len(got) != 1 || got[0].Name != "vibe-bootstrap" {
+	if got := filtered.Components[0].Agents["codex"].Skills; len(got) != 1 || got[0].Name != "vibe-bootstrap" {
 		t.Fatalf("filtered skills = %#v", got)
 	}
 	if len(resolved.Components) != 3 {
@@ -81,20 +86,22 @@ func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 
 func TestChooseComponentsAllowsIndividualSkill(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
-		{Name: "codex-skills", Component: conenv.Component{Category: "ai", Codex: &conenv.Codex{Skills: []conenv.Skill{
-			{Name: "project-bootstrap", Source: "project"},
-			{Name: "vibe-bootstrap", Source: "vibe"},
-		}}}},
+		{Name: "codex-skills", Component: conenv.Component{Category: "ai", Agents: testAgent("codex", nil, nil,
+			conenv.Skill{Name: "project-bootstrap", Source: "project"},
+			conenv.Skill{Name: "vibe-bootstrap", Source: "vibe"},
+		)}},
 	}}
 	var output bytes.Buffer
-	if err := chooseComponents(strings.NewReader("2\n\n"), &output, resolved); err != nil {
+	// The tree is component, agent, then one node per skill. Toggling the agent
+	// off and a skill back on leaves a partially selected agent.
+	if err := chooseComponents(strings.NewReader("2\n3\n\n"), &output, resolved); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolved.Components[0].Codex.Skills; len(got) != 1 || got[0].Name != "vibe-bootstrap" {
-		t.Fatalf("selected skills = %#v", got)
+	if got := resolved.Components[0].Agents["codex"].Skills; len(got) != 1 || got[0].Name != "project-bootstrap" {
+		t.Fatalf("partial selection = %#v", got)
 	}
-	if !strings.Contains(output.String(), "[~] 1. codex-skills") {
-		t.Fatalf("parent did not render a partial state: %s", output.String())
+	if !strings.Contains(output.String(), "[~] 2. codex") {
+		t.Fatalf("agent did not render a partial state: %s", output.String())
 	}
 }
 
@@ -102,13 +109,11 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 	component := conenv.NamedComponent{Name: "mixed", Component: conenv.Component{
 		Packages: []conenv.Package{{Manager: "winget", ID: "Example.Tool"}},
 		Checks:   []conenv.Check{{Name: "tool", Type: "command", Command: "tool"}},
-		Codex: &conenv.Codex{
-			Config: map[string]any{"model": "example"},
-			MCPServers: map[string]conenv.MCP{
-				"docs": {Type: "http", URL: "https://example.com"},
-			},
-			Skills: []conenv.Skill{{Name: "one", Source: "one"}, {Name: "two", Source: "two"}},
-		},
+		Agents: testAgent("codex",
+			map[string]any{"model": "example"},
+			map[string]conenv.MCP{"docs": {Type: "http", URL: "https://example.com"}},
+			conenv.Skill{Name: "one", Source: "one"}, conenv.Skill{Name: "two", Source: "two"},
+		),
 	}}
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{component}}
 	catalog := newSelectionCatalog(resolved)
@@ -122,37 +127,42 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	skillOnly := skillFiltered.Components[0]
-	if len(skillOnly.Packages) != 0 || len(skillOnly.Checks) != 0 || len(skillOnly.Codex.Config) != 0 || len(skillOnly.Codex.MCPServers) != 0 {
+	agent := skillOnly.Agents["codex"]
+	if len(skillOnly.Packages) != 0 || len(skillOnly.Checks) != 0 || len(agent.Config) != 0 || len(agent.MCPServers) != 0 {
 		t.Fatalf("skill-only selection retained component resources: %#v", skillOnly)
 	}
-	if len(skillOnly.Codex.Skills) != 1 || skillOnly.Codex.Skills[0].Name != "two" {
-		t.Fatalf("skill-only selection = %#v", skillOnly.Codex.Skills)
+	if len(agent.Skills) != 1 || agent.Skills[0].Name != "two" {
+		t.Fatalf("skill-only selection = %#v", agent.Skills)
 	}
 
-	resourcesFiltered, err := filteredResolved(resolved, []string{idsByTitle["Component resources"]})
+	resourcesFiltered, err := filteredResolved(resolved, []string{idsByTitle["Agent resources"]})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resourcesOnly := resourcesFiltered.Components[0]
-	if len(resourcesOnly.Packages) != 1 || len(resourcesOnly.Checks) != 1 || len(resourcesOnly.Codex.Config) != 1 || len(resourcesOnly.Codex.MCPServers) != 1 {
-		t.Fatalf("resource selection lost component resources: %#v", resourcesOnly)
+	agent = resourcesOnly.Agents["codex"]
+	if len(resourcesOnly.Packages) != 0 || len(resourcesOnly.Checks) != 0 {
+		t.Fatalf("agent-only selection retained component resources: %#v", resourcesOnly)
 	}
-	if len(resourcesOnly.Codex.Skills) != 0 {
-		t.Fatalf("resource selection retained skills: %#v", resourcesOnly.Codex.Skills)
+	if len(agent.Config) != 1 || len(agent.MCPServers) != 1 {
+		t.Fatalf("resource selection lost agent resources: %#v", agent)
+	}
+	if len(agent.Skills) != 0 {
+		t.Fatalf("resource selection retained skills: %#v", agent.Skills)
 	}
 }
 
 func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{{
-		Name: "codex", Component: conenv.Component{Codex: &conenv.Codex{
-			Config: map[string]any{"model": "example"},
-			Skills: []conenv.Skill{{Name: "one", Source: "one"}, {Name: "two", Source: "two"}},
-		}},
+		Name: "ai-agents", Component: conenv.Component{Agents: testAgent("codex",
+			map[string]any{"model": "example"}, nil,
+			conenv.Skill{Name: "one", Source: "one"}, conenv.Skill{Name: "two", Source: "two"},
+		)},
 	}}}
 	catalog := newSelectionCatalog(resolved)
 	var selectedIDs []string
 	for _, item := range catalog.items {
-		if item.Title == "Component resources" || item.Title == "two" {
+		if item.Title == "Agent resources" || item.Title == "two" {
 			selectedIDs = append(selectedIDs, item.ID)
 		}
 	}
@@ -160,7 +170,7 @@ func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := conenv.SelectionFromTargets(resolved, []string{"codex/resources", "codex/skills/two"})
+	spec, err := conenv.SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/resources", "ai-agents/agents/codex/skills/two"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,11 +215,16 @@ func testRepository(t *testing.T) string {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "shell"), "shell\n")
 	writeFile(t, filepath.Join(root, "vim"), "vim\n")
-	manifest := `schemaVersion: conenv/v1
+	skillDir := filepath.Join(root, "skills", "release-notes")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "skill\n")
+	manifest := `schemaVersion: conenv/v2
 defaultProfile: base
 profiles:
   base:
-    components: [shell, vim]
+    components: [shell, vim, ai-agents]
 components:
   shell:
     category: program
@@ -224,6 +239,17 @@ components:
       - source: vim
         target: '{{ .home }}/vim'
         mode: render
+  ai-agents:
+    category: ai
+    description: Shared agent skills
+    agents:
+      codex:
+        harness: codex
+        config:
+          approval_policy: on-request
+        skills:
+          - name: release-notes
+            source: skills/release-notes
 `
 	writeFile(t, filepath.Join(root, "conenv.yaml"), manifest)
 	return root
@@ -321,8 +347,11 @@ func TestConfigSavesAndReportsRepository(t *testing.T) {
 	if report.Source != "user config" {
 		t.Fatalf("source = %q, want user config\n%s", report.Source, stdout)
 	}
-	if report.Scope == nil || report.Scope.Profile != "base" || len(report.Scope.Components) != 2 {
+	if report.Scope == nil || report.Scope.Profile != "base" || len(report.Scope.Components) != 3 {
 		t.Fatalf("unexpected scope: %s", stdout)
+	}
+	if len(report.Scope.Agents) != 1 || report.Scope.Agents[0].Agent != "codex" || report.Scope.Agents[0].Harness != "codex" || report.Scope.Agents[0].Skills != 1 {
+		t.Fatalf("scope did not report the declared agent: %s", stdout)
 	}
 
 	if code, stdout, stderr := runCLI(t, "", "config", "--profiles", "--components"); code != 0 {
@@ -333,7 +362,7 @@ func TestConfigSavesAndReportsRepository(t *testing.T) {
 
 	if code, stdout, stderr := runCLI(t, "", "config", "--profile-detail", "base"); code != 0 {
 		t.Fatalf("config --profile-detail exit = %d\nstderr: %s", code, stderr)
-	} else if !strings.Contains(stdout, "components: shell, vim") {
+	} else if !strings.Contains(stdout, "components: shell, vim, ai-agents") {
 		t.Fatalf("unexpected profile detail: %s", stdout)
 	}
 
@@ -372,7 +401,7 @@ func TestConfigSavesAndReportsRepository(t *testing.T) {
 func TestConfigReportsInvalidManifest(t *testing.T) {
 	registerTestEnvironment(t)
 	repository := t.TempDir()
-	writeFile(t, filepath.Join(repository, "conenv.yaml"), "schemaVersion: conenv/v2\nprofiles: {}\ncomponents: {}\n")
+	writeFile(t, filepath.Join(repository, "conenv.yaml"), "schemaVersion: conenv/v3\nprofiles: {}\ncomponents: {}\n")
 	code, _, stderr := runCLI(t, "", "config", "--repo", repository, "--check")
 	if code != 2 {
 		t.Fatalf("config --check exit = %d, want 2\nstderr: %s", code, stderr)
@@ -436,7 +465,7 @@ func TestSavedSelectionDrivesStatusAndConfig(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.SelectionSource != "profile" || len(report.Scope) != 2 {
+	if report.SelectionSource != "profile" || len(report.Scope) != 3 {
 		t.Fatalf("scope did not fall back to the profile: %s", stdout)
 	}
 }
@@ -468,7 +497,7 @@ func TestApplyRejectsConflictingFlags(t *testing.T) {
 func TestStatusCheckRunsHealthChecks(t *testing.T) {
 	registerTestEnvironment(t)
 	repository := t.TempDir()
-	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v1
+	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v2
 defaultProfile: base
 profiles:
   base:
@@ -495,8 +524,9 @@ components:
 func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	home := registerTestEnvironment(t)
 	repository := testRepository(t)
-	// Every item starts selected, so deselecting "vim" leaves only "shell".
-	code, stdout, stderr := runCLI(t, "2\n\n", "apply", "--repo", repository, "--select", "--save", "--yes", "--dry-run")
+	// Every component starts selected, so deselecting "vim" and "ai-agents"
+	// leaves only "shell".
+	code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--save", "--yes", "--dry-run")
 	if code != 0 {
 		t.Fatalf("apply --select exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
@@ -509,7 +539,7 @@ func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	}
 
 	exported := filepath.Join(t.TempDir(), "selection.yaml")
-	if code, _, stderr := runCLI(t, "2\n\n", "apply", "--repo", repository, "--select", "--write", exported, "--yes", "--dry-run"); code != 0 {
+	if code, _, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--write", exported, "--yes", "--dry-run"); code != 0 {
 		t.Fatalf("apply --select --write exit = %d\nstderr: %s", code, stderr)
 	}
 	if _, err := os.Stat(exported); err != nil {
@@ -581,6 +611,153 @@ func TestApplyUndoRestoresBackup(t *testing.T) {
 	}
 	if len(state.Runs) != 0 {
 		t.Fatalf("undone run is still listed: %#v", state.Runs)
+	}
+}
+
+// requireSymlinks skips a test when the environment cannot create symbolic
+// links, which is the default for an unprivileged Windows process.
+func requireSymlinks(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symbolic links are unavailable: %v", err)
+	}
+}
+
+func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
+	home := registerTestEnvironment(t)
+	requireSymlinks(t)
+	repository := testRepository(t)
+
+	// The harness listing reports the adapter and where it writes by default.
+	code, stdout, stderr := runCLI(t, "", "config", "--repo", repository, "--list-agents", "--json")
+	if code != 0 {
+		t.Fatalf("config --list-agents exit = %d\nstderr: %s", code, stderr)
+	}
+	report := decodeReport(t, stdout)
+	if len(report.Adapters) != 1 || report.Adapters[0].Harness != "codex" {
+		t.Fatalf("unexpected adapters: %s", stdout)
+	}
+	if report.Adapters[0].ConfigPath != filepath.Join(home, ".codex", "config.toml") {
+		t.Fatalf("config path = %s", report.Adapters[0].ConfigPath)
+	}
+	if report.Adapters[0].SkillsDir != filepath.Join(home, ".agents", "skills") {
+		t.Fatalf("skills dir = %s", report.Adapters[0].SkillsDir)
+	}
+
+	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex", "--yes")
+	if code != 0 {
+		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("agent configuration was not written: %v", err)
+	}
+	if !strings.Contains(string(data), `approval_policy = 'on-request'`) {
+		t.Fatalf("unexpected agent configuration:\n%s", data)
+	}
+	link := filepath.Join(home, ".agents", "skills", "release-notes")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("skill was not linked into the shared global directory: %v", err)
+	}
+	if filepath.Base(target) != "release-notes" {
+		t.Fatalf("skill link points at %s", target)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills")); err == nil {
+		t.Fatal("skills must not be linked into the harness private directory")
+	}
+
+	code, stdout, stderr = runCLI(t, "", "status", "--repo", repository, "--json")
+	if code != 0 {
+		t.Fatalf("status exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var status conenv.StatusReport
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.InSync {
+		t.Fatalf("scope is not in sync after apply: %s", stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--undo", "--yes")
+	if code != 0 {
+		t.Fatalf("apply --undo exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("skill link survived undo: %v", err)
+	}
+	if _, err := os.Lstat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("agent configuration created by apply survived undo: %v", err)
+	}
+}
+
+func TestAgentConfigPreservesUnmanagedKeys(t *testing.T) {
+	home := registerTestEnvironment(t)
+	repository := testRepository(t)
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, configPath, "model = \"keep-me\"\n[mcp_servers.existing]\nurl = \"https://example.com\"\n")
+
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex/resources", "--yes"); code != 0 {
+		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "keep-me") || !strings.Contains(text, "example.com") {
+		t.Fatalf("unmanaged settings were dropped:\n%s", text)
+	}
+	if !strings.Contains(text, "approval_policy") {
+		t.Fatalf("declared settings were not merged:\n%s", text)
+	}
+}
+
+func TestRemovedCodexBlockIsRejected(t *testing.T) {
+	registerTestEnvironment(t)
+	repository := t.TempDir()
+	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v1
+defaultProfile: base
+profiles:
+  base:
+    components: [codex-skills]
+components:
+  codex-skills:
+    codex:
+      skills: []
+`)
+	code, _, stderr := runCLI(t, "", "config", "--repo", repository, "--check")
+	if code != 2 {
+		t.Fatalf("config --check exit = %d, want 2\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "codex") {
+		t.Fatalf("expected a removed field error, got: %s", stderr)
+	}
+
+	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v3
+defaultProfile: base
+profiles:
+  base:
+    components: []
+components: {}
+`)
+	code, _, stderr = runCLI(t, "", "config", "--repo", repository, "--check")
+	if code != 2 {
+		t.Fatalf("config --check exit = %d, want 2\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "conenv/v2") {
+		t.Fatalf("expected a schema version error, got: %s", stderr)
 	}
 }
 

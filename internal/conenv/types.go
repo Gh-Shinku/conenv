@@ -2,7 +2,7 @@ package conenv
 
 import "time"
 
-const SchemaVersion = "conenv/v1"
+const SchemaVersion = "conenv/v2"
 
 type Manifest struct {
 	SchemaVersion  string               `yaml:"schemaVersion" json:"schemaVersion"`
@@ -25,14 +25,14 @@ type SecretRef struct {
 }
 
 type Component struct {
-	Category      string        `yaml:"category,omitempty" json:"category,omitempty"`
-	Description   string        `yaml:"description,omitempty" json:"description,omitempty"`
-	Platforms     []string      `yaml:"platforms,omitempty" json:"platforms,omitempty"`
-	Architectures []string      `yaml:"architectures,omitempty" json:"architectures,omitempty"`
-	Packages      []Package     `yaml:"packages,omitempty" json:"packages,omitempty"`
-	Files         []ManagedFile `yaml:"files,omitempty" json:"files,omitempty"`
-	Codex         *Codex        `yaml:"codex,omitempty" json:"codex,omitempty"`
-	Checks        []Check       `yaml:"checks,omitempty" json:"checks,omitempty"`
+	Category      string           `yaml:"category,omitempty" json:"category,omitempty"`
+	Description   string           `yaml:"description,omitempty" json:"description,omitempty"`
+	Platforms     []string         `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+	Architectures []string         `yaml:"architectures,omitempty" json:"architectures,omitempty"`
+	Packages      []Package        `yaml:"packages,omitempty" json:"packages,omitempty"`
+	Files         []ManagedFile    `yaml:"files,omitempty" json:"files,omitempty"`
+	Agents        map[string]Agent `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Checks        []Check          `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
 
 type Package struct {
@@ -48,12 +48,6 @@ type ManagedFile struct {
 	Target    string `yaml:"target" json:"target"`
 	Mode      string `yaml:"mode" json:"mode"`
 	Sensitive bool   `yaml:"sensitive,omitempty" json:"sensitive,omitempty"`
-}
-
-type Codex struct {
-	Config     map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
-	Skills     []Skill        `yaml:"skills,omitempty" json:"skills,omitempty"`
-	MCPServers map[string]MCP `yaml:"mcpServers,omitempty" json:"mcpServers,omitempty"`
 }
 
 type Skill struct {
@@ -118,6 +112,7 @@ type Plan struct {
 
 type ManagedResource struct {
 	Component string `json:"component"`
+	Harness   string `json:"harness,omitempty"`
 	Kind      string `json:"kind"`
 	Target    string `json:"target"`
 	Digest    string `json:"digest"`
