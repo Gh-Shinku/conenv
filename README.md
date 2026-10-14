@@ -1,6 +1,6 @@
 # conenv
 
-`conenv` is a declarative, repository-first manager for personal development environments. It installs tools, links or renders configuration files, provisions Codex skills and MCP servers, detects drift, and can restore replaced files.
+`conenv` is a declarative, repository-first manager for personal development environments. It installs tools, links or renders configuration files, provisions Codex skills and MCP servers, detects drift, and can undo an applied run.
 
 The CLI and configuration repository are deliberately independent. Windows is the supported v0.1 runtime; the Go core and manifest format are designed to accommodate Linux and macOS later.
 
@@ -16,43 +16,97 @@ Windows links require Developer Mode or permission to create symbolic links.
 
 ## Quick start
 
-Register a configuration repository once, then validate and apply its selected profile:
+Register a configuration repository once, then apply its profile:
 
 ```powershell
-./conenv.exe repo use C:\path\to\conenv-config
-./conenv.exe repo show
-./conenv.exe validate
-./conenv.exe plan
-./conenv.exe apply --select
-./conenv.exe apply --selection selection.yaml --yes
-./conenv.exe doctor
+./conenv.exe config C:\path\to\conenv-config
+./conenv.exe apply
+./conenv.exe status
 ```
 
-`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` includes a plan preview and lets you return to the checklist before confirming. `conenv select --write selection.yaml` exports the same choice for agents and scripts; `--selection` replays it exactly, while repeatable `--only` accepts stable targets such as `git` or `codex/skills/release-notes`. These three selection modes are mutually exclusive. `plan`, `status`, and `doctor` are read-only. `--yes` skips only the apply preview and confirmation.
+Before a default is saved, a command also accepts `--repo DIR`, or uses the working directory when it contains `conenv.yaml`.
+
+Everyday commands:
+
+```text
+conenv config [DIR]       view or set the configuration repository
+conenv apply              preview, confirm, and apply (--dry-run previews only)
+conenv status             view the configuration scope and current state
+```
+
+There are three commands to remember:
+
+- **`config` owns the configuration** (repository, declarations, scope) and never touches the machine. Point it at a repository with `conenv config DIR`, then inspect what a profile contains and whether it is valid.
+- **`status` reports state** and changes nothing. It lists each component in scope as `in_sync`, `drifted (N pending)`, or `error`, and exits with status `3` when anything drifted, so scripts can branch on it. `conenv status --check` additionally runs real health checks.
+- **`apply` changes the machine.** It plans, previews, confirms, then commits. `conenv apply --dry-run` only prints the plan, and `conenv apply --undo` reverses a recorded run.
 
 ## Commands
 
 ```text
-conenv validate [--repo DIR] [--profile NAME] [--json]
-conenv plan     [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
-conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--yes] [--json]
-conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
-conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
-conenv select   --write FILE [--repo DIR] [--profile NAME]
-conenv profile  list|show NAME [--repo DIR] [--json]
-conenv component list|show NAME [--repo DIR] [--json]
-conenv history  list|show RUN_ID [--json]
-conenv restore  RUN_ID [--dry-run] [--yes] [--json]
-conenv repo     show|use REPOSITORY|unset
-conenv use      REPOSITORY
-conenv config   [--json]
-conenv schema   [--write FILE]
-conenv version
+conenv config [DIR] [--unset | --check | --profiles | --components
+               | --profile-detail NAME | --component-detail NAME
+               | --unset-selection | --write FILE]
+conenv apply  [--dry-run] [--select | --selection FILE | --only TARGET...]
+              [--save] [--write FILE] [--yes]
+conenv apply  --undo [RUN_ID] [--list] [--dry-run] [--yes]
+conenv status [--check] [--select | --selection FILE | --only TARGET...]
+
+Common flags: [--repo DIR] [--profile NAME] [--json]
 ```
 
-Exit status `0` means success, `1` means an operational failure, `2` means invalid input or configuration, and `3` means a completed status or health inspection found drift or an unhealthy check.
+Exit status `0` means success, `1` means an operational failure, `2` means invalid input or configuration, and `3` means a completed inspection found drift or an unhealthy check. When JSON is requested, stdout contains only the result document; diagnostics and prompts use stderr.
 
-`repo show`, `repo use`, and `repo unset` manage the default configuration repository; `config` and `use` remain compatibility aliases. Commands that can emit JSON keep result data on stdout and diagnostics on stderr. Non-interactive `apply` and `restore` require `--yes` when they would otherwise prompt.
+## Scope
+
+`apply` and `status` inspect the same scope. A scope comes from, in order:
+
+1. An explicit selector on the command line: `--select` (interactive checklist), `--selection FILE` (exact replay), or repeatable `--only TARGET`.
+2. The machine default saved in `~/.conenv/selection.yaml`.
+3. The whole profile resolved from the configuration repository.
+
+Save a scope once and every later `status` or `apply` reuses it without repeating the arguments:
+
+```powershell
+./conenv.exe apply --select --save       # pick interactively, then save the choice
+./conenv.exe apply --only git --yes --save
+./conenv.exe status                      # reports the saved scope
+./conenv.exe config --unset-selection    # back to the whole profile
+```
+
+`--only` and `--selection` are temporary unless `--save` is given. Interactive `apply` asks whether to save the selection after the plan is confirmed. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, or `COMPONENT/skills/SKILL`.
+
+`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and nested resources such as individual Codex skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for agents and scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
+
+## Undo
+
+`apply` backs up every destination it replaces under `~/.conenv/backups/<run-id>/` and records the run in `~/.conenv/state.json`. Undo reverses that:
+
+```powershell
+./conenv.exe apply --undo --list        # recorded runs and whether their backup exists
+./conenv.exe apply --undo --dry-run     # what undoing the last run would change
+./conenv.exe apply --undo               # undo the last run (asks first)
+./conenv.exe apply --undo RUN_ID        # undo a specific run
+```
+
+Undo removes destinations that `apply` created, restores the backed-up originals, and rolls back the recorded profile, managed paths, and run metadata. Installed packages are never uninstalled; they are listed as retained. Non-interactive undo requires `--yes`, and `--undo` cannot be combined with `--select`, `--only`, `--selection`, `--save`, or `--write`.
+
+## Removed commands
+
+The CLI intentionally exposes only `config`, `apply`, and `status`. Older scripts need these replacements:
+
+| Removed | Replacement |
+|---|---|
+| `validate` | `config --check` |
+| `plan` | `apply --dry-run` |
+| `doctor` | `status --check` |
+| `restore RUN_ID` | `apply --undo RUN_ID` |
+| `history list|show` | `apply --undo --list`, `apply --undo RUN_ID --dry-run` |
+| `select --write FILE` | `apply --select --write FILE` |
+| `profile list|show` | `config --profiles`, `config --profile-detail NAME` |
+| `component list|show` | `config --components`, `config --component-detail NAME` |
+| `repo show|use|unset`, `use`, `config --json` | `config`, `config DIR`, `config --unset` |
+| `schema --write FILE` | copy [conenv.v1.schema.json](internal/assets/schema/conenv.v1.schema.json) from the repository |
+| `version` | no equivalent; the release tag identifies the build |
 
 ## Documentation
 

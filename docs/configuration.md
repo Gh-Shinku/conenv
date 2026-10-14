@@ -2,11 +2,7 @@
 
 The `conenv.yaml` committed to a dedicated configuration repository is the source of truth for an environment. The CLI repository contains only the program, documentation, examples, and embedded schema.
 
-Export the schema into a configuration repository for editor completion:
-
-```powershell
-conenv schema --write C:\path\to\conenv-config\.conenv\conenv.v1.schema.json
-```
+Export the schema into a configuration repository for editor completion by copying [`internal/assets/schema/conenv.v1.schema.json`](../internal/assets/schema/conenv.v1.schema.json) to `C:\path\to\conenv-config\.conenv\conenv.v1.schema.json`.
 
 Then reference it from the manifest:
 
@@ -22,10 +18,10 @@ Conenv locates the configuration repository in this order:
 
 1. `--repo DIR` on the current command.
 2. The `CONENV_REPO` environment variable.
-3. The default saved by `conenv repo use REPOSITORY` in `~/.conenv/config.json`.
+3. The default saved by `conenv config DIR` in `~/.conenv/config.json`.
 4. The current working directory.
 
-Use `conenv repo show` to inspect the resolved path and its source, `conenv repo use REPOSITORY` to save a default, and `conenv repo unset` to clear it. The older `conenv config`, `conenv use`, and `--root` forms remain compatibility aliases.
+Use `conenv config` to inspect the resolved path and its source, `conenv config DIR` to save a default, and `conenv config --unset` to clear it. Adding `--profiles`, `--components`, `--profile-detail NAME`, or `--component-detail NAME` inspects the inventory without requiring runtime prerequisites, and `conenv config --check` validates the declarations.
 
 ## Complete example
 
@@ -243,7 +239,7 @@ checks:
     args: [--version]
 ```
 
-`conenv doctor` combines custom checks with desired-state checks for packages, links, rendered files, Codex configuration, and skills.
+`conenv status --check` combines custom checks with desired-state checks for packages, links, rendered files, Codex configuration, and skills. Without `--check`, `status` reports drift but does not execute these checks.
 
 ## Codex
 
@@ -298,11 +294,20 @@ See the official [Codex configuration reference](https://developers.openai.com/c
 
 ## Planning, drift, and recovery
 
-`conenv plan` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `2` when actions are pending. Applying the same manifest twice is a no-op.
+`conenv apply --dry-run` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `3` when actions are pending. Applying the same manifest twice is a no-op.
 
-Add `--select` to `plan`, `apply`, `status`, or `doctor` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; individual Codex skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation. The selection affects only that command and does not modify the profile.
+Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; individual Codex skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
 
-Export the same selection to a stable, agent-friendly file with `conenv select --write selection.yaml`, then replay it with `--selection selection.yaml`:
+A scope given on one command is temporary. To stop repeating the same arguments, save it as the machine default, which every later `apply` and `status` reads:
+
+```powershell
+conenv apply --select --save
+conenv apply --only git --yes --save
+conenv status
+conenv config --unset-selection
+```
+
+The saved selection lives in `~/.conenv/selection.yaml`, and `conenv config` reports the path and the scope source. `conenv apply --select --write selection.yaml` exports the same choice to any file, which `--selection selection.yaml` replays:
 
 ```yaml
 schemaVersion: conenv/selection/v1
@@ -325,30 +330,28 @@ Before replacing a destination, conenv stores its current contents under:
 
 The active profile, managed paths, ownership, desired digests, and run history are recorded in `~/.conenv/state.json`. Secret values and rendered contents are not stored there.
 
-Use `conenv history list` to discover run IDs and `conenv history show RUN_ID` to inspect a run before restoring it. Both commands accept `--json`.
+Use `conenv apply --undo --list` to discover recorded runs and whether their backups still exist, and `conenv apply --undo RUN_ID --dry-run` to inspect one before undoing it. Both accept `--json`.
 
-If a filesystem action fails, changes from that run are rolled back in reverse order. Restore a completed run explicitly with:
+If a filesystem action fails, changes from that run are rolled back in reverse order. Undo a completed run with:
 
 ```powershell
-conenv restore RUN_ID
+conenv apply --undo
+conenv apply --undo RUN_ID
 ```
 
-Restore replaces the managed destinations but does not uninstall packages. Direct edits to managed destinations are treated as drift; edit the repository source instead. Conenv does not perform two-way synchronization.
+Undo replaces the managed destinations and rolls the recorded state metadata back, but it does not uninstall packages. Direct edits to managed destinations are treated as drift; edit the repository source instead. Conenv does not perform two-way synchronization.
 
-Preview the exact reverse-order file operations with `conenv restore RUN_ID --dry-run`; add `--json` for automation. New apply records include the previous managed-state snapshot, allowing a restore to reinstate state metadata as well as files. Successfully installed packages are listed but retained. Non-interactive restore requires `--yes` unless it is a dry run.
+Add `--dry-run` to preview the exact reverse-order file operations without executing them, and `--json` for automation. New apply records include the previous managed-state snapshot, allowing undo to reinstate state metadata as well as files. Successfully installed packages are listed as retained. Non-interactive undo requires `--yes`; a dry run never does.
 
 ## Command behavior
 
-- `validate` checks schema fields, inheritance, sources, secrets, skills, MCP declarations, checks, and destination ownership.
-- `plan` emits the deterministic actions required for the selected profile.
+- `config` reports or sets the configuration repository and its scope, and `config --check` validates schema fields, inheritance, sources, secrets, skills, MCP declarations, checks, and destination ownership.
+- `config --profiles`, `--components`, `--profile-detail`, and `--component-detail` expose manifest inventory without requiring runtime prerequisites.
 - `apply` installs packages, backs up conflicts, and commits filesystem changes.
-- `status` reports each selected component as `in_sync`, `drifted`, or `error` and supports machine-readable JSON. Drift exits with status `3`.
-- `doctor` runs desired-state and custom health checks.
-- `restore` previews or restores the pre-apply filesystem and recorded managed state for a run.
-- `repo use|show|unset` manages the default configuration repository; `use` and `config` are compatibility aliases.
-- `schema` prints or writes the JSON Schema embedded in the CLI binary.
-- `profile list|show` and `component list|show` expose manifest inventory without requiring runtime prerequisites.
-- `history list|show` discovers and inspects recorded apply runs.
+- `apply --dry-run` emits the deterministic actions required for the selected scope.
+- `status` reports each selected component as `in_sync`, `drifted`, or `error`. Drift exits with status `3`.
+- `status --check` runs desired-state and custom health checks.
+- `apply --undo` previews or reverses the filesystem and recorded managed state of a run.
 
 `--json` output never includes rendered file contents or resolved secret values.
-When JSON is requested, stdout contains only the result document; diagnostics and prompts use stderr. In non-interactive environments, `apply` and mutating `restore` fail immediately unless `--yes` is supplied.
+When JSON is requested, stdout contains only the result document; diagnostics and prompts use stderr. In non-interactive environments, `apply` and a mutating `apply --undo` fail immediately unless `--yes` is supplied.
