@@ -3,3 +3,5 @@ conenv.local.yaml
 /conenv
 dist/
 coverage.out
+/.gocache/
+/.gotmp/

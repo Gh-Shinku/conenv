@@ -79,12 +79,13 @@ type Check struct {
 }
 
 type Resolved struct {
-	Root       string
-	Profile    string
-	Variables  map[string]string
-	Secrets    map[string]SecretRef
-	Components []NamedComponent
-	Skipped    []string
+	Root            string
+	Profile         string
+	Variables       map[string]string
+	Secrets         map[string]SecretRef
+	Components      []NamedComponent
+	Skipped         []string
+	SelectionSource string
 }
 
 type NamedComponent struct {
@@ -136,13 +137,16 @@ type ComponentStatus struct {
 }
 
 type StatusReport struct {
-	Repository string            `json:"repository"`
-	Profile    string            `json:"profile"`
-	Scope      []string          `json:"scope"`
-	Platform   string            `json:"platform"`
-	Skipped    []string          `json:"skipped,omitempty"`
-	InSync     bool              `json:"inSync"`
-	Components []ComponentStatus `json:"components"`
+	Repository      string            `json:"repository"`
+	Profile         string            `json:"profile"`
+	Scope           []string          `json:"scope"`
+	Platform        string            `json:"platform"`
+	Skipped         []string          `json:"skipped,omitempty"`
+	SelectionSource string            `json:"selectionSource,omitempty"`
+	InSync          bool              `json:"inSync"`
+	Components      []ComponentStatus `json:"components"`
+	Healthy         bool              `json:"healthy,omitempty"`
+	Checks          []CheckResult     `json:"checks,omitempty"`
 }
 
 type BackupRecord struct {

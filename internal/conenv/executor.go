@@ -132,6 +132,7 @@ func Restore(runID string) error {
 		}
 	}
 	state.Restores = append(state.Restores, RestoreRecord{RunID: run.ID, RestoredAt: time.Now().UTC()})
+	state.Runs = removeRun(state.Runs, run.ID)
 	return saveState(home, state)
 }
 
@@ -237,6 +238,18 @@ func saveState(home string, state State) error {
 	return atomicWrite(statePath, append(stateData, '\n'), 0o600)
 }
 
+// removeRun drops a run from the recorded history, which keeps an undone run
+// out of the default undo target and out of the run listing.
+func removeRun(current []RunRecord, runID string) []RunRecord {
+	filtered := make([]RunRecord, 0, len(current))
+	for _, run := range current {
+		if run.ID != runID {
+			filtered = append(filtered, run)
+		}
+	}
+	return filtered
+}
+
 func removeManaged(current, removed []ManagedResource) []ManagedResource {
 	targets := make(map[string]bool, len(removed))
 	for _, resource := range removed {
@@ -331,7 +344,20 @@ func copyEntry(source, target string) error {
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
-			if err := copyEntry(filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name())); err != nil {
+			childSource := filepath.Join(source, entry.Name())
+			// ReadDir follows a directory symlink far enough to list it, so
+			// preserve nested links as links instead of copying the target.
+			if entry.Type()&os.ModeSymlink != 0 {
+				link, err := os.Readlink(childSource)
+				if err != nil {
+					return err
+				}
+				if err := os.Symlink(link, filepath.Join(target, entry.Name())); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := copyEntry(childSource, filepath.Join(target, entry.Name())); err != nil {
 				return err
 			}
 		}

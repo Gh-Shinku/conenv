@@ -36,3 +36,27 @@ func FindRun(state State, id string) (RunRecord, error) {
 	}
 	return RunRecord{}, fmt.Errorf("unknown run %q", id)
 }
+
+// LatestRunID returns the most recent apply that has not been undone, which is
+// the default undo target.
+func LatestRunID() (string, error) {
+	state, err := LoadState()
+	if err != nil {
+		return "", err
+	}
+	if len(state.Runs) == 0 {
+		return "", errors.New("no recorded runs to undo")
+	}
+	return state.Runs[len(state.Runs)-1].ID, nil
+}
+
+// RunBackupExists reports whether a run still has its backup directory, which
+// is required before its changes can be undone.
+func RunBackupExists(runID string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".conenv", "backups", runID, "run.json"))
+	return err == nil
+}

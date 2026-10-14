@@ -79,6 +79,51 @@ func UserConfigPath() (string, error) {
 	return userConfigPath()
 }
 
+// SavedSelectionPath is the machine-local default selection applied by commands
+// that do not receive an explicit scope.
+func SavedSelectionPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".conenv", "selection.yaml"), nil
+}
+
+func LoadDefaultSelection() (*SelectionSpec, error) {
+	path, err := SavedSelectionPath()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return LoadSelection(path)
+}
+
+func SaveDefaultSelection(spec *SelectionSpec) (string, error) {
+	path, err := SavedSelectionPath()
+	if err != nil {
+		return "", err
+	}
+	if err := SaveSelection(path, spec); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func ClearDefaultSelection() error {
+	path, err := SavedSelectionPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func loadUserConfig() (userConfig, error) {
 	path, err := userConfigPath()
 	if err != nil {
