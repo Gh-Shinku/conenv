@@ -7,10 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 func BuildPlan(r *Resolved) (*Plan, error) {
-	plan := &Plan{Profile: r.Profile, Actions: []Action{}}
+	plan := &Plan{
+		Repository: r.Root,
+		Profile:    r.Profile,
+		Scope:      componentNames(r.Components),
+		Platform:   runtime.GOOS + "/" + runtime.GOARCH,
+		Skipped:    append([]string(nil), r.Skipped...),
+		Actions:    []Action{},
+	}
 	for _, component := range r.Components {
 		for _, pkg := range component.Packages {
 			plan.Resources = append(plan.Resources, ManagedResource{Component: component.Name, Kind: "package", Target: pkg.Manager + ":" + pkg.ID, Digest: digestString(pkg.Version)})
@@ -110,6 +118,14 @@ func BuildPlan(r *Resolved) (*Plan, error) {
 		}
 	}
 	return plan, nil
+}
+
+func componentNames(components []NamedComponent) []string {
+	names := make([]string, 0, len(components))
+	for _, component := range components {
+		names = append(names, component.Name)
+	}
+	return names
 }
 
 func digestString(value string) string {

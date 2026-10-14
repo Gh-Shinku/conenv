@@ -31,21 +31,8 @@ func LoadProfile(root, profile string) (*Resolved, error) {
 	if err != nil {
 		return nil, err
 	}
-	base, err := decodeManifest(filepath.Join(absRoot, "conenv.yaml"), true)
+	base, err := LoadManifest(absRoot)
 	if err != nil {
-		return nil, err
-	}
-	localPath := filepath.Join(absRoot, "conenv.local.yaml")
-	if _, err := os.Stat(localPath); err == nil {
-		local, decodeErr := decodeManifest(localPath, false)
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		mergeManifest(base, local)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if err := validateManifest(base, absRoot); err != nil {
 		return nil, err
 	}
 	if profile == "" {
@@ -115,9 +102,38 @@ func LoadProfile(root, profile string) (*Resolved, error) {
 		}
 		if matches(runtime.GOOS, component.Platforms) && matches(runtime.GOARCH, component.Architectures) {
 			resolved.Components = append(resolved.Components, NamedComponent{Name: name, Component: component})
+		} else {
+			resolved.Skipped = append(resolved.Skipped, name)
 		}
 	}
 	return resolved, nil
+}
+
+// LoadManifest reads the base and machine-local manifests, merges them, and
+// validates their structure without resolving a profile or runtime resources.
+func LoadManifest(root string) (*Manifest, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	base, err := decodeManifest(filepath.Join(absRoot, "conenv.yaml"), true)
+	if err != nil {
+		return nil, err
+	}
+	localPath := filepath.Join(absRoot, "conenv.local.yaml")
+	if _, err := os.Stat(localPath); err == nil {
+		local, decodeErr := decodeManifest(localPath, false)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		mergeManifest(base, local)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := validateManifest(base, absRoot); err != nil {
+		return nil, err
+	}
+	return base, nil
 }
 
 func decodeManifest(path string, required bool) (*Manifest, error) {

@@ -39,6 +39,9 @@ conenv apply    [--repo DIR] [--profile NAME] [--select | --selection FILE | --o
 conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
 conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
 conenv select   --write FILE [--repo DIR] [--profile NAME]
+conenv profile  list|show NAME [--repo DIR] [--json]
+conenv component list|show NAME [--repo DIR] [--json]
+conenv history  list|show RUN_ID [--json]
 conenv restore  RUN_ID [--yes]
 conenv use      REPOSITORY
 conenv config   [--json]
@@ -46,7 +49,7 @@ conenv schema   [--write FILE]
 conenv version
 ```
 
-Exit status `0` means success, `1` means an operational failure, and `2` means invalid input, drift, or an unhealthy check.
+Exit status `0` means success, `1` means an operational failure, `2` means invalid input or configuration, and `3` means a completed status or health inspection found drift or an unhealthy check.
 
 ## Documentation
 

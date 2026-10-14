@@ -325,6 +325,8 @@ Before replacing a destination, conenv stores its current contents under:
 
 The active profile, managed paths, ownership, desired digests, and run history are recorded in `~/.conenv/state.json`. Secret values and rendered contents are not stored there.
 
+Use `conenv history list` to discover run IDs and `conenv history show RUN_ID` to inspect a run before restoring it. Both commands accept `--json`.
+
 If a filesystem action fails, changes from that run are rolled back in reverse order. Restore a completed run explicitly with:
 
 ```powershell
@@ -338,11 +340,13 @@ Restore replaces the managed destinations but does not uninstall packages. Direc
 - `validate` checks schema fields, inheritance, sources, secrets, skills, MCP declarations, checks, and destination ownership.
 - `plan` emits the deterministic actions required for the selected profile.
 - `apply` installs packages, backs up conflicts, and commits filesystem changes.
-- `status` detects drift and supports machine-readable JSON.
+- `status` reports each selected component as `in_sync`, `drifted`, or `error` and supports machine-readable JSON. Drift exits with status `3`.
 - `doctor` runs desired-state and custom health checks.
 - `restore` restores the pre-apply filesystem state for a run.
 - `use` records the default configuration repository for future commands.
 - `config` shows the selected repository and selection source.
 - `schema` prints or writes the JSON Schema embedded in the CLI binary.
+- `profile list|show` and `component list|show` expose manifest inventory without requiring runtime prerequisites.
+- `history list|show` discovers and inspects recorded apply runs.
 
 `--json` output never includes rendered file contents or resolved secret values.

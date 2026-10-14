@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 
 	"conenv/internal/assets"
@@ -65,13 +67,13 @@ func run(args []string) int {
 		}
 		fmt.Printf("valid profile %q with %d component(s)\n", resolved.Profile, len(resolved.Components))
 		return 0
-	case "plan", "status":
-		common, extra, err := parseCommon(args[0], args[1:], true, true)
+	case "plan":
+		common, extra, err := parseCommon("plan", args[1:], true, true)
 		if err != nil {
 			return fail(err, 2)
 		}
 		if len(extra) != 0 {
-			return fail(fmt.Errorf("%s does not accept positional arguments", args[0]), 2)
+			return fail(errors.New("plan does not accept positional arguments"), 2)
 		}
 		resolved, err := loadResolved(common)
 		if err != nil {
@@ -94,8 +96,41 @@ func run(args []string) int {
 			return fail(err, 1)
 		}
 		printPlan(plan, common.json)
-		if args[0] == "status" && len(plan.Actions) > 0 {
-			return 2
+		return 0
+	case "status":
+		common, extra, err := parseCommon("status", args[1:], true, true)
+		if err != nil {
+			return fail(err, 2)
+		}
+		if len(extra) != 0 {
+			return fail(errors.New("status does not accept positional arguments"), 2)
+		}
+		resolved, err := loadResolved(common)
+		if err != nil {
+			return fail(err, 2)
+		}
+		if common.selectComponents {
+			output := io.Writer(os.Stdout)
+			if common.json {
+				output = os.Stderr
+			}
+			if err := chooseComponents(os.Stdin, output, resolved); err != nil {
+				return fail(err, 1)
+			}
+			if err := conenv.ValidateScope(resolved); err != nil {
+				return fail(err, 2)
+			}
+		}
+		report := conenv.InspectStatus(resolved)
+		if common.json {
+			if err := writeJSON(report); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			printStatus(report)
+		}
+		if !report.InSync {
+			return 3
 		}
 		return 0
 	case "apply":
@@ -202,9 +237,15 @@ func run(args []string) int {
 			unhealthy = unhealthy || !result.Healthy
 		}
 		if unhealthy {
-			return 2
+			return 3
 		}
 		return 0
+	case "profile":
+		return runProfileCommand(args[1:])
+	case "component":
+		return runComponentCommand(args[1:])
+	case "history":
+		return runHistoryCommand(args[1:])
 	case "select":
 		fs := flag.NewFlagSet("select", flag.ContinueOnError)
 		repo := fs.String("repo", "", "configuration repository")
@@ -310,6 +351,323 @@ func run(args []string) int {
 	default:
 		usage()
 		return fail(fmt.Errorf("unknown command %q", args[0]), 2)
+	}
+}
+
+type profileInfo struct {
+	Name       string   `json:"name"`
+	Default    bool     `json:"default"`
+	Extends    []string `json:"extends,omitempty"`
+	Components []string `json:"components"`
+	Skipped    []string `json:"skipped,omitempty"`
+}
+
+type componentInfo struct {
+	Name          string           `json:"name"`
+	Category      string           `json:"category"`
+	Description   string           `json:"description,omitempty"`
+	Platforms     []string         `json:"platforms,omitempty"`
+	Architectures []string         `json:"architectures,omitempty"`
+	Supported     bool             `json:"supported"`
+	Declaration   conenv.Component `json:"declaration,omitempty"`
+}
+
+func runProfileCommand(args []string) int {
+	if len(args) == 0 {
+		return fail(errors.New("usage: conenv profile list|show NAME [--repo DIR] [--json]"), 2)
+	}
+	action := args[0]
+	name := ""
+	flagArgs := args[1:]
+	if action == "show" {
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fail(errors.New("usage: conenv profile show NAME [--repo DIR] [--json]"), 2)
+		}
+		name = args[1]
+		flagArgs = args[2:]
+	}
+	repository, asJSON, rest, err := loadManifestCommand("profile "+action, flagArgs)
+	if err != nil {
+		return fail(err, 2)
+	}
+	manifest, err := conenv.LoadManifest(repository.Path)
+	if err != nil {
+		return fail(err, 2)
+	}
+	switch action {
+	case "list":
+		if len(rest) != 0 {
+			return fail(errors.New("profile list does not accept positional arguments"), 2)
+		}
+		names := make([]string, 0, len(manifest.Profiles))
+		for name := range manifest.Profiles {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		profiles := make([]profileInfo, 0, len(names))
+		for _, name := range names {
+			resolved, resolveErr := conenv.LoadProfile(repository.Path, name)
+			if resolveErr != nil {
+				return fail(resolveErr, 2)
+			}
+			profiles = append(profiles, profileInfo{Name: name, Default: name == manifest.DefaultProfile, Extends: manifest.Profiles[name].Extends, Components: resolvedComponentNames(resolved), Skipped: resolved.Skipped})
+		}
+		if asJSON {
+			if err := writeJSON(profiles); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			for _, profile := range profiles {
+				marker := ""
+				if profile.Default {
+					marker = " (default)"
+				}
+				fmt.Printf("%s%s: %s\n", profile.Name, marker, strings.Join(profile.Components, ", "))
+			}
+		}
+		return 0
+	case "show":
+		if len(rest) != 0 {
+			return fail(errors.New("usage: conenv profile show NAME [--repo DIR] [--json]"), 2)
+		}
+		profile, ok := manifest.Profiles[name]
+		if !ok {
+			return fail(fmt.Errorf("unknown profile %q", name), 2)
+		}
+		resolved, err := conenv.LoadProfile(repository.Path, name)
+		if err != nil {
+			return fail(err, 2)
+		}
+		info := profileInfo{Name: name, Default: name == manifest.DefaultProfile, Extends: profile.Extends, Components: resolvedComponentNames(resolved), Skipped: resolved.Skipped}
+		if asJSON {
+			if err := writeJSON(info); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			fmt.Printf("profile: %s\ndefault: %t\nextends: %s\ncomponents: %s\n", info.Name, info.Default, strings.Join(info.Extends, ", "), strings.Join(info.Components, ", "))
+			if len(info.Skipped) > 0 {
+				fmt.Printf("skipped: %s\n", strings.Join(info.Skipped, ", "))
+			}
+		}
+		return 0
+	default:
+		return fail(fmt.Errorf("unknown profile command %q", action), 2)
+	}
+}
+
+func runComponentCommand(args []string) int {
+	if len(args) == 0 {
+		return fail(errors.New("usage: conenv component list|show NAME [--repo DIR] [--json]"), 2)
+	}
+	action := args[0]
+	name := ""
+	flagArgs := args[1:]
+	if action == "show" {
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fail(errors.New("usage: conenv component show NAME [--repo DIR] [--json]"), 2)
+		}
+		name = args[1]
+		flagArgs = args[2:]
+	}
+	repository, asJSON, rest, err := loadManifestCommand("component "+action, flagArgs)
+	if err != nil {
+		return fail(err, 2)
+	}
+	manifest, err := conenv.LoadManifest(repository.Path)
+	if err != nil {
+		return fail(err, 2)
+	}
+	switch action {
+	case "list":
+		if len(rest) != 0 {
+			return fail(errors.New("component list does not accept positional arguments"), 2)
+		}
+		names := make([]string, 0, len(manifest.Components))
+		for name := range manifest.Components {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		components := make([]componentInfo, 0, len(names))
+		for _, name := range names {
+			components = append(components, presentComponent(name, manifest.Components[name], false))
+		}
+		if asJSON {
+			if err := writeJSON(components); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			for _, component := range components {
+				state := "supported"
+				if !component.Supported {
+					state = "unsupported"
+				}
+				fmt.Printf("%s [%s, %s] %s\n", component.Name, component.Category, state, component.Description)
+			}
+		}
+		return 0
+	case "show":
+		if len(rest) != 0 {
+			return fail(errors.New("usage: conenv component show NAME [--repo DIR] [--json]"), 2)
+		}
+		component, ok := manifest.Components[name]
+		if !ok {
+			return fail(fmt.Errorf("unknown component %q", name), 2)
+		}
+		info := presentComponent(name, component, true)
+		if asJSON {
+			if err := writeJSON(info); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			fmt.Printf("component: %s\ncategory: %s\nsupported: %t\ndescription: %s\npackages: %d\nfiles: %d\nchecks: %d\n", info.Name, info.Category, info.Supported, info.Description, len(component.Packages), len(component.Files), len(component.Checks))
+			if component.Codex != nil {
+				fmt.Printf("skills: %d\nmcp servers: %d\n", len(component.Codex.Skills), len(component.Codex.MCPServers))
+			}
+		}
+		return 0
+	default:
+		return fail(fmt.Errorf("unknown component command %q", action), 2)
+	}
+}
+
+func runHistoryCommand(args []string) int {
+	if len(args) == 0 {
+		return fail(errors.New("usage: conenv history list|show RUN_ID [--json]"), 2)
+	}
+	action := args[0]
+	runID := ""
+	flagArgs := args[1:]
+	if action == "show" {
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fail(errors.New("usage: conenv history show RUN_ID [--json]"), 2)
+		}
+		runID = args[1]
+		flagArgs = args[2:]
+	}
+	fs := flag.NewFlagSet("history "+action, flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	state, err := conenv.LoadState()
+	if err != nil {
+		return fail(err, 1)
+	}
+	switch action {
+	case "list":
+		if len(rest) != 0 {
+			return fail(errors.New("history list does not accept positional arguments"), 2)
+		}
+		runs := append([]conenv.RunRecord(nil), state.Runs...)
+		for left, right := 0, len(runs)-1; left < right; left, right = left+1, right-1 {
+			runs[left], runs[right] = runs[right], runs[left]
+		}
+		if *asJSON {
+			if err := writeJSON(runs); err != nil {
+				return fail(err, 1)
+			}
+		} else if len(runs) == 0 {
+			fmt.Println("no recorded runs")
+		} else {
+			for _, run := range runs {
+				fmt.Printf("%s  %s  %s  %d change(s)\n", run.ID, run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), run.Profile, len(run.Changes))
+			}
+		}
+		return 0
+	case "show":
+		if len(rest) != 0 {
+			return fail(errors.New("usage: conenv history show RUN_ID [--json]"), 2)
+		}
+		run, err := conenv.FindRun(state, runID)
+		if err != nil {
+			return fail(err, 2)
+		}
+		if *asJSON {
+			if err := writeJSON(run); err != nil {
+				return fail(err, 1)
+			}
+		} else {
+			fmt.Printf("run: %s\nprofile: %s\ncreated: %s\nchanges: %d\npackages retained: %d\nresources: %d\n", run.ID, run.Profile, run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), len(run.Changes), len(run.Packages), len(run.Resources))
+		}
+		return 0
+	default:
+		return fail(fmt.Errorf("unknown history command %q", action), 2)
+	}
+}
+
+func loadManifestCommand(name string, args []string) (conenv.RepositorySelection, bool, []string, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	repo := fs.String("repo", "", "configuration repository")
+	root := fs.String("root", "", "deprecated alias for --repo")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return conenv.RepositorySelection{}, false, nil, err
+	}
+	if *repo != "" && *root != "" {
+		return conenv.RepositorySelection{}, false, nil, errors.New("use only one of --repo and --root")
+	}
+	explicit := *repo
+	if explicit == "" {
+		explicit = *root
+	}
+	repository, err := conenv.ResolveRepository(explicit)
+	return repository, *asJSON, fs.Args(), err
+}
+
+func resolvedComponentNames(resolved *conenv.Resolved) []string {
+	names := make([]string, 0, len(resolved.Components))
+	for _, component := range resolved.Components {
+		names = append(names, component.Name)
+	}
+	return names
+}
+
+func presentComponent(name string, component conenv.Component, declaration bool) componentInfo {
+	category := component.Category
+	if category == "" {
+		category = "program"
+		if component.Codex != nil && len(component.Files) == 0 && len(component.Packages) == 0 {
+			category = "ai"
+		}
+	}
+	info := componentInfo{
+		Name: name, Category: category, Description: component.Description,
+		Platforms: component.Platforms, Architectures: component.Architectures,
+		Supported: matchesCurrent(runtime.GOOS, component.Platforms) && matchesCurrent(runtime.GOARCH, component.Architectures),
+	}
+	if declaration {
+		info.Declaration = component
+	}
+	return info
+}
+
+func matchesCurrent(value string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, candidate := range allowed {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func printStatus(report conenv.StatusReport) {
+	fmt.Printf("repository: %s\nprofile: %s\nplatform: %s\nscope: %s\n", report.Repository, report.Profile, report.Platform, strings.Join(report.Scope, ", "))
+	if len(report.Skipped) > 0 {
+		fmt.Printf("skipped: %s\n", strings.Join(report.Skipped, ", "))
+	}
+	for _, component := range report.Components {
+		detail := component.State
+		if component.Pending > 0 {
+			detail = fmt.Sprintf("%s (%d pending)", detail, component.Pending)
+		}
+		if component.Error != "" {
+			detail = detail + ": " + component.Error
+		}
+		fmt.Printf("- %s: %s\n", component.Name, detail)
 	}
 }
 
@@ -425,11 +783,15 @@ func printPlan(plan *conenv.Plan, asJSON bool) {
 		_ = writeJSON(plan)
 		return
 	}
+	fmt.Printf("repository: %s\nprofile: %s\nplatform: %s\nscope: %s\n", plan.Repository, plan.Profile, plan.Platform, strings.Join(plan.Scope, ", "))
+	if len(plan.Skipped) > 0 {
+		fmt.Printf("skipped: %s\n", strings.Join(plan.Skipped, ", "))
+	}
 	if len(plan.Actions) == 0 {
-		fmt.Printf("profile %q is in sync\n", plan.Profile)
+		fmt.Println("environment is in sync")
 		return
 	}
-	fmt.Printf("profile %q: %d action(s)\n", plan.Profile, len(plan.Actions))
+	fmt.Printf("actions: %d\n", len(plan.Actions))
 	for _, action := range plan.Actions {
 		fmt.Printf("- [%s] %s\n", action.Kind, action.Summary)
 	}
@@ -463,6 +825,9 @@ Usage:
   conenv status   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
   conenv doctor   [--repo DIR] [--profile NAME] [--select | --selection FILE | --only TARGET...] [--json]
   conenv select   --write FILE [--repo DIR] [--profile NAME]
+  conenv profile  list|show NAME [--repo DIR] [--json]
+  conenv component list|show NAME [--repo DIR] [--json]
+  conenv history  list|show RUN_ID [--json]
   conenv restore  RUN_ID [--yes]
   conenv use      REPOSITORY
   conenv config   [--json]

@@ -84,6 +84,7 @@ type Resolved struct {
 	Variables  map[string]string
 	Secrets    map[string]SecretRef
 	Components []NamedComponent
+	Skipped    []string
 }
 
 type NamedComponent struct {
@@ -105,9 +106,13 @@ type Action struct {
 }
 
 type Plan struct {
-	Profile   string            `json:"profile"`
-	Actions   []Action          `json:"actions"`
-	Resources []ManagedResource `json:"resources,omitempty"`
+	Repository string            `json:"repository"`
+	Profile    string            `json:"profile"`
+	Scope      []string          `json:"scope"`
+	Platform   string            `json:"platform"`
+	Skipped    []string          `json:"skipped,omitempty"`
+	Actions    []Action          `json:"actions"`
+	Resources  []ManagedResource `json:"resources,omitempty"`
 }
 
 type ManagedResource struct {
@@ -121,6 +126,23 @@ type CheckResult struct {
 	Name    string `json:"name"`
 	Healthy bool   `json:"healthy"`
 	Detail  string `json:"detail"`
+}
+
+type ComponentStatus struct {
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Pending int    `json:"pending,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type StatusReport struct {
+	Repository string            `json:"repository"`
+	Profile    string            `json:"profile"`
+	Scope      []string          `json:"scope"`
+	Platform   string            `json:"platform"`
+	Skipped    []string          `json:"skipped,omitempty"`
+	InSync     bool              `json:"inSync"`
+	Components []ComponentStatus `json:"components"`
 }
 
 type BackupRecord struct {

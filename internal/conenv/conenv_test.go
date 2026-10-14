@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -123,6 +124,30 @@ components: {}
 	}
 }
 
+func TestLoadProfileTracksUnsupportedComponents(t *testing.T) {
+	root := t.TempDir()
+	manifest := `schemaVersion: conenv/v1
+defaultProfile: base
+profiles:
+  base:
+    components: [supported, skipped]
+components:
+  supported: {}
+  skipped:
+    platforms: [definitely-not-a-real-platform]
+`
+	if err := os.WriteFile(filepath.Join(root, "conenv.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := LoadProfile(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved.Components) != 1 || resolved.Components[0].Name != "supported" || !reflect.DeepEqual(resolved.Skipped, []string{"skipped"}) {
+		t.Fatalf("unexpected platform resolution: components=%#v skipped=%#v", resolved.Components, resolved.Skipped)
+	}
+}
+
 func TestExpandStringDoesNotExpandDollarInSecret(t *testing.T) {
 	t.Setenv("CONENV_DOLLAR_SECRET", "pa$$word")
 	got, err := expandString(`token={{ secret "token" }}`, map[string]string{}, map[string]SecretRef{"token": {Env: "CONENV_DOLLAR_SECRET"}})
@@ -200,6 +225,30 @@ func TestBuildPlanIsIdempotentAndRedactsContent(t *testing.T) {
 	}
 	if len(second.Actions) != 0 {
 		t.Fatalf("expected no-op second plan, got %#v", second.Actions)
+	}
+}
+
+func TestInspectStatusReportsEachComponent(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	source := filepath.Join(root, "template")
+	if err := os.WriteFile(source, []byte("desired"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inSyncTarget := filepath.Join(home, "in-sync")
+	if err := os.WriteFile(inSyncTarget, []byte("desired"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved := &Resolved{
+		Root: root, Profile: "test", Variables: map[string]string{"home": home},
+		Components: []NamedComponent{
+			{Name: "ready", Component: Component{Files: []ManagedFile{{Source: source, Target: inSyncTarget, Mode: "render"}}}},
+			{Name: "drifted", Component: Component{Files: []ManagedFile{{Source: source, Target: filepath.Join(home, "missing"), Mode: "render"}}}},
+		},
+	}
+	report := InspectStatus(resolved)
+	if report.InSync || len(report.Components) != 2 || report.Components[0].State != "in_sync" || report.Components[1].State != "drifted" || report.Components[1].Pending != 1 {
+		t.Fatalf("unexpected status report: %#v", report)
 	}
 }
 
