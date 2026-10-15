@@ -687,7 +687,9 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 		t.Fatal("skills must not be linked into the harness private directory")
 	}
 
-	code, stdout, stderr = runCLI(t, "", "status", "--repo", repository, "--json")
+	// `--only` is temporary, so status has to select the same target to inspect
+	// the scope that apply actually changed.
+	code, stdout, stderr = runCLI(t, "", "status", "--repo", repository, "--only", "ai-agents/agents/codex", "--json")
 	if code != 0 {
 		t.Fatalf("status exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
