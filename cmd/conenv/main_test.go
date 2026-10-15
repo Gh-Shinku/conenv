@@ -640,7 +640,7 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 		t.Fatalf("config --list-agents exit = %d\nstderr: %s", code, stderr)
 	}
 	report := decodeReport(t, stdout)
-	if len(report.Adapters) != 1 || report.Adapters[0].Harness != "codex" {
+	if len(report.Adapters) != 2 || report.Adapters[0].Harness != "codex" || report.Adapters[1].Harness != "pi" {
 		t.Fatalf("unexpected adapters: %s", stdout)
 	}
 	if report.Adapters[0].ConfigPath != filepath.Join(home, ".codex", "config.toml") {
@@ -648,6 +648,12 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 	}
 	if report.Adapters[0].SkillsDir != filepath.Join(home, ".agents", "skills") {
 		t.Fatalf("skills dir = %s", report.Adapters[0].SkillsDir)
+	}
+	if report.Adapters[1].ConfigPath != filepath.Join(home, ".pi", "agent", "mcp.json") {
+		t.Fatalf("pi config path = %s", report.Adapters[1].ConfigPath)
+	}
+	if report.Adapters[1].SkillsDir != filepath.Join(home, ".pi", "agent", "skills") {
+		t.Fatalf("pi skills dir = %s", report.Adapters[1].SkillsDir)
 	}
 
 	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex", "--yes")
@@ -782,4 +788,88 @@ func writeRunState(t *testing.T, home, runID, profile string, changes []conenv.B
 		t.Fatal(err)
 	}
 	writeFile(t, runPath, string(runData)+"\n")
+}
+
+// piRepository creates a repository whose only agent targets the Pi harness.
+func piRepository(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "pdf-reading")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "skill\n")
+	manifest := `schemaVersion: conenv/v2
+defaultProfile: base
+profiles:
+  base:
+    components: [pi-agents]
+components:
+  pi-agents:
+    category: ai
+    description: Pi agent resources
+    agents:
+      pi:
+        harness: pi
+        mcpServers:
+          docs:
+            type: http
+            url: https://example.com/mcp
+        skills:
+          - name: pdf-reading
+            source: skills/pdf-reading
+`
+	writeFile(t, filepath.Join(root, "conenv.yaml"), manifest)
+	return root
+}
+
+func TestPiAgentWritesMCPConfigAndPrivateSkills(t *testing.T) {
+	home := registerTestEnvironment(t)
+	requireSymlinks(t)
+	repository := piRepository(t)
+
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--yes"); code != 0 {
+		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	mcpPath := filepath.Join(home, ".pi", "agent", "mcp.json")
+	data, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("Pi MCP config was not written: %v", err)
+	}
+	var document struct {
+		MCPServers map[string]struct {
+			URL string `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("written Pi MCP config is not valid JSON: %v\n%s", err, data)
+	}
+	if document.MCPServers["docs"].URL != "https://example.com/mcp" {
+		t.Fatalf("unexpected Pi MCP config:\n%s", data)
+	}
+	link := filepath.Join(home, ".pi", "agent", "skills", "pdf-reading")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("skill was not linked into the Pi skills directory: %v", err)
+	}
+	if filepath.Base(target) != "pdf-reading" {
+		t.Fatalf("skill link points at %s", target)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "pdf-reading")); err == nil {
+		t.Fatal("a pi skill must not be linked into the shared skills directory")
+	}
+	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 0 {
+		t.Fatalf("status exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+
+	code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--undo", "--yes")
+	if code != 0 {
+		t.Fatalf("apply --undo exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("skill link survived undo: %v", err)
+	}
+	if _, err := os.Lstat(mcpPath); !os.IsNotExist(err) {
+		t.Fatalf("Pi MCP config created by apply survived undo: %v", err)
+	}
 }

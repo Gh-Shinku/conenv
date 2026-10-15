@@ -86,7 +86,7 @@
         "harness": {
           "type": "string",
           "minLength": 1,
-          "description": "Registered harness adapter, for example codex."
+          "description": "Registered harness adapter, for example codex or pi."
         },
         "configPath": {
           "type": "string",

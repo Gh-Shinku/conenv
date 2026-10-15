@@ -272,8 +272,11 @@ Paths come from the adapter, so a declaration stays portable:
 | Harness | Configuration | Skills |
 |---|---|---|
 | `codex` | `~/.codex/config.toml` | `~/.agents/skills/<name>` |
+| `pi` | `~/.pi/agent/mcp.json` | `~/.pi/agent/skills/<name>` |
 
-Skills live in one shared global directory and are linked there once, even when several agents declare the same skill. Every skill source must contain `SKILL.md`.
+A skill is linked into the directory its own adapter reports, so a harness that reads the shared global directory serves every harness on the machine, while a harness with a private directory keeps its skills to itself. Every skill source must contain `SKILL.md`.
+
+The `pi` adapter renders `mcpServers` into `~/.pi/agent/mcp.json`, the file directly next to Pi's settings. Pi owns `~/.pi/agent/settings.json` and rewrites it itself, so the adapter manages no settings keys and rejects a declared `config` instead of merging keys into a file another tool maintains.
 
 Override a path only when a machine deviates from these defaults:
 
@@ -283,9 +286,12 @@ agents:
     harness: codex
     configPath: '{{ .home }}/.codex/config.toml'
     skillsDir: '{{ .home }}/.agents/skills'
+  pi:
+    harness: pi
+    skillsDir: '{{ .home }}/.pi/agent/skills'
 ```
 
-`CONENV_AGENT_CODEX_CONFIG` and `CONENV_AGENT_CODEX_SKILLS_DIR` override the defaults for experiments and tests. `conenv config --list-agents` prints each registered harness with its resolved paths and whether those directories exist on this machine.
+`CONENV_AGENT_<HARNESS>_CONFIG` and `CONENV_AGENT_<HARNESS>_SKILLS_DIR` override the defaults for experiments and tests, for example `CONENV_AGENT_PI_SKILLS_DIR`. `conenv config --list-agents` prints each registered harness with its resolved paths and whether those directories exist on this machine.
 
 ### Settings and merging
 
@@ -321,6 +327,22 @@ agents:
 ```
 
 See the official [Codex configuration reference](https://developers.openai.com/codex/config-reference) and [MCP guide](https://developers.openai.com/learn/docs-mcp).
+
+Pi declares the same servers and renders them into `~/.pi/agent/mcp.json`:
+
+```yaml
+agents:
+  pi:
+    harness: pi
+    skills:
+      - name: pdf-reading
+        source: ai/pi/skills/pdf-reading
+    mcpServers:
+      browser:
+        type: stdio
+        command: npx
+        args: [-y, browser-mcp@latest]
+```
 
 When `--select` is used, a component shows its agent as a child node, and each agent exposes its configuration and MCP servers as an `Agent resources` child plus one node per skill. Resource IDs follow the same shape: `ai-agents/agents/codex`, `ai-agents/agents/codex/resources`, and `ai-agents/agents/codex/skills/release-notes`.
 

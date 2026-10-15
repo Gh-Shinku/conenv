@@ -83,7 +83,7 @@ func (codexAdapter) Merge(doc any, config map[string]any, mcp map[string]MCP, sk
 	if !ok {
 		return nil, fmt.Errorf("Codex config document has unexpected type %T", doc)
 	}
-	merged := codexCloneMap(root)
+	merged := cloneConfigMap(root)
 	for _, key := range sortedKeys(config) {
 		merged[key] = config[key]
 	}
@@ -108,15 +108,15 @@ func (codexAdapter) Serialize(doc any) ([]byte, error) {
 // mergedMCPServers expands the declared servers and merges them into the
 // servers already present, so unknown keys on an existing entry are retained.
 func mergedMCPServers(root map[string]any, mcp map[string]MCP, r *Resolved) (map[string]any, error) {
-	servers := codexCloneMap(nil)
+	servers := cloneConfigMap(nil)
 	if existing, ok := root["mcp_servers"].(map[string]any); ok {
-		servers = codexCloneMap(existing)
+		servers = cloneConfigMap(existing)
 	}
 	for _, name := range sortedKeys(mcp) {
 		declaration := mcp[name]
-		entry := codexCloneMap(nil)
+		entry := cloneConfigMap(nil)
 		if previous, ok := servers[name].(map[string]any); ok {
-			entry = codexCloneMap(previous)
+			entry = cloneConfigMap(previous)
 		}
 		if declaration.Type == "http" {
 			url, err := expandString(declaration.URL, r.Variables, r.Secrets)
@@ -191,24 +191,24 @@ func validateMCPServers(mcp map[string]MCP) error {
 	return nil
 }
 
-// codexCloneMap copies a TOML document so a merge never mutates the parsed
+// cloneConfigMap copies a TOML document so a merge never mutates the parsed
 // original or shares nested maps with it.
-func codexCloneMap(source map[string]any) map[string]any {
+func cloneConfigMap(source map[string]any) map[string]any {
 	clone := make(map[string]any, len(source))
 	for key, value := range source {
-		clone[key] = codexCloneValue(value)
+		clone[key] = cloneConfigValue(value)
 	}
 	return clone
 }
 
-func codexCloneValue(value any) any {
+func cloneConfigValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		return codexCloneMap(typed)
+		return cloneConfigMap(typed)
 	case []any:
 		clone := make([]any, len(typed))
 		for i, item := range typed {
-			clone[i] = codexCloneValue(item)
+			clone[i] = cloneConfigValue(item)
 		}
 		return clone
 	default:
