@@ -19,6 +19,8 @@ type piAdapter struct{}
 
 func (piAdapter) Harness() string { return "pi" }
 
+func (piAdapter) SkillsOnly() bool { return false }
+
 func (piAdapter) DefaultConfigPath(home string) string {
 	return filepath.Join(home, ".pi", "agent", "mcp.json")
 }

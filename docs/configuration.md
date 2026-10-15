@@ -272,9 +272,12 @@ Paths come from the adapter, so a declaration stays portable:
 | Harness | Configuration | Skills |
 |---|---|---|
 | `codex` | `~/.codex/config.toml` | `~/.agents/skills/<name>` |
+| `global` | none, skills only | `~/.agents/skills/<name>` |
 | `pi` | `~/.pi/agent/mcp.json` | `~/.pi/agent/skills/<name>` |
 
 A skill is linked into the directory its own adapter reports, so a harness that reads the shared global directory serves every harness on the machine, while a harness with a private directory keeps its skills to itself. Every skill source must contain `SKILL.md`.
+
+`global` publishes a skill to the shared directory without claiming any tool's configuration file, which is the right choice when the content belongs to no single harness: it accepts skills and rejects settings and MCP servers, because those belong to the harness that reads them.
 
 The `pi` adapter renders `mcpServers` into `~/.pi/agent/mcp.json`, the file directly next to Pi's settings. Pi owns `~/.pi/agent/settings.json` and rewrites it itself, so the adapter manages no settings keys and rejects a declared `config` instead of merging keys into a file another tool maintains.
 

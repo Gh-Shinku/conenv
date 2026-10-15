@@ -15,6 +15,8 @@ type codexAdapter struct{}
 
 func (codexAdapter) Harness() string { return "codex" }
 
+func (codexAdapter) SkillsOnly() bool { return false }
+
 func (codexAdapter) DefaultConfigPath(home string) string {
 	return filepath.Join(home, ".codex", "config.toml")
 }
@@ -167,6 +169,9 @@ func ValidateAgent(agent Agent) error {
 	adapter, err := LookupAdapter(agent.Harness)
 	if err != nil {
 		return err
+	}
+	if adapter.SkillsOnly() && agent.ManagesConfig() {
+		return fmt.Errorf("harness %s manages skills only; declare settings and MCP servers under a harness that owns their configuration file", agent.Harness)
 	}
 	if err := adapter.Validate(agent.Config); err != nil {
 		return err

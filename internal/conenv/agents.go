@@ -17,6 +17,9 @@ type AgentAdapter interface {
 	// machine home directory, without variable expansion.
 	DefaultConfigPath(home string) string
 	DefaultSkillsDir(home string) string
+	// SkillsOnly reports that the harness owns no configuration file: conenv then
+	// resolves only its skills directory and rejects configuration declarations.
+	SkillsOnly() bool
 	// Parse reads an existing configuration file into a manageable document.
 	Parse(data []byte) (doc any, err error)
 	// Merge applies the collected settings to a parsed document and returns the
@@ -93,6 +96,9 @@ func AgentConfigPath(r *Resolved, agent Agent) (string, error) {
 	adapter, err := LookupAdapter(agent.Harness)
 	if err != nil {
 		return "", err
+	}
+	if adapter.SkillsOnly() {
+		return "", fmt.Errorf("harness %s owns no configuration file", agent.Harness)
 	}
 	value := agent.ConfigPath
 	if value == "" {

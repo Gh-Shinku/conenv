@@ -282,7 +282,7 @@ type agentView struct {
 // default, which answers "what does conenv know about my agents".
 type adapterView struct {
 	Harness     string   `json:"harness"`
-	ConfigPath  string   `json:"configPath"`
+	ConfigPath  string   `json:"configPath,omitempty"`
 	SkillsDir   string   `json:"skillsDir"`
 	ConfigKeys  []string `json:"configKeys,omitempty"`
 	ConfigReady bool     `json:"configReady"`
@@ -507,13 +507,15 @@ func listAdapters() []adapterView {
 	views := make([]adapterView, 0)
 	for _, adapter := range conenv.Adapters() {
 		view := adapterView{
-			Harness:    adapter.Harness(),
-			ConfigPath: adapter.DefaultConfigPath(home),
-			SkillsDir:  adapter.DefaultSkillsDir(home),
-			ConfigKeys: adapter.AllowedConfigKeys(),
+			Harness:   adapter.Harness(),
+			SkillsDir: adapter.DefaultSkillsDir(home),
 		}
-		if _, err := os.Stat(filepath.Dir(view.ConfigPath)); err == nil {
-			view.ConfigReady = true
+		if !adapter.SkillsOnly() {
+			view.ConfigPath = adapter.DefaultConfigPath(home)
+			view.ConfigKeys = adapter.AllowedConfigKeys()
+			if _, err := os.Stat(filepath.Dir(view.ConfigPath)); err == nil {
+				view.ConfigReady = true
+			}
 		}
 		if _, err := os.Stat(filepath.Dir(view.SkillsDir)); err == nil {
 			view.SkillsReady = true
@@ -613,7 +615,11 @@ func printConfigReport(report configReport) {
 	if len(report.Adapters) > 0 {
 		fmt.Println("harnesses:")
 		for _, adapter := range report.Adapters {
-			fmt.Printf("- %s config=%s (%s) skillsDir=%s (%s)\n", adapter.Harness, adapter.ConfigPath, presence(adapter.ConfigReady), adapter.SkillsDir, presence(adapter.SkillsReady))
+			config := "config=-"
+			if adapter.ConfigPath != "" {
+				config = fmt.Sprintf("config=%s (%s)", adapter.ConfigPath, presence(adapter.ConfigReady))
+			}
+			fmt.Printf("- %s %s skillsDir=%s (%s)\n", adapter.Harness, config, adapter.SkillsDir, presence(adapter.SkillsReady))
 		}
 	}
 	if len(report.Profiles) > 0 {

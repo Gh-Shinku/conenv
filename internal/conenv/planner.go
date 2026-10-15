@@ -170,12 +170,19 @@ func collectAgents(r *Resolved) ([]agentEntry, error) {
 			}
 			entry, ok := entries[agentName]
 			if !ok {
-				if _, err := LookupAdapter(agent.Harness); err != nil {
+				adapter, err := LookupAdapter(agent.Harness)
+				if err != nil {
 					return nil, fmt.Errorf("component %q agent %q: %w", component.Name, agentName, err)
 				}
-				configPath, err := AgentConfigPath(r, agent)
-				if err != nil {
-					return nil, fmt.Errorf("component %q: %w", component.Name, err)
+				if adapter.SkillsOnly() && agent.ManagesConfig() {
+					return nil, fmt.Errorf("component %q agent %q: harness %s manages skills only; declare settings and MCP servers under a harness that owns their configuration file", component.Name, agentName, agent.Harness)
+				}
+				configPath := ""
+				if !adapter.SkillsOnly() {
+					configPath, err = AgentConfigPath(r, agent)
+					if err != nil {
+						return nil, fmt.Errorf("component %q: %w", component.Name, err)
+					}
 				}
 				skillsDir, err := AgentSkillsDir(r, agent)
 				if err != nil {

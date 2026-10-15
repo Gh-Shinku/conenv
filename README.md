@@ -94,7 +94,7 @@ components:
             source: ai/skills/release-notes
 ```
 
-Several components can contribute to one agent and one component can target several harnesses; settings are merged into a single configuration file per agent. Skills are linked into the directory the harness adapter reports: a harness that reads the shared `~/.agents/skills` directory serves every harness on the machine, while a harness with a private directory such as Pi's `~/.pi/agent/skills` keeps its own skills. Paths come from the adapter and can be overridden per declaration with `configPath` and `skillsDir`, or per machine with `CONENV_AGENT_<HARNESS>_CONFIG` and `CONENV_AGENT_<HARNESS>_SKILLS_DIR`.
+Several components can contribute to one agent and one component can target several harnesses; settings are merged into a single configuration file per agent. Skills are linked into the directory the harness adapter reports: a harness that reads the shared `~/.agents/skills` directory serves every harness on the machine, while a harness with a private directory such as Pi's `~/.pi/agent/skills` keeps its own skills. The `global` harness publishes to the shared directory without owning any tool's configuration file, so it accepts skills only. Paths come from the adapter and can be overridden per declaration with `configPath` and `skillsDir`, or per machine with `CONENV_AGENT_<HARNESS>_CONFIG` and `CONENV_AGENT_<HARNESS>_SKILLS_DIR`.
 
 `config` accepts only the settings the adapter manages: an unregistered key is a configuration error, so a typo cannot inject an unknown key into another tool's file. Existing unmanaged keys are retained, generated configuration is written with owner-only permissions, and a change is committed only after the file can be parsed back.
 
