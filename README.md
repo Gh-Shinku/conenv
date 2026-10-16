@@ -6,22 +6,26 @@ The CLI and configuration repository are deliberately independent. Windows is th
 
 ## Install
 
-Build with Go 1.27 or newer:
+Install with Go 1.27 or newer:
 
 ```powershell
-go build -o conenv.exe ./cmd/conenv
+go install ./cmd/conenv
 ```
 
 Windows links require Developer Mode or permission to create symbolic links.
+Keep the installed executable outside the source checkout. A checkout prepared
+for a low-integrity Windows sandbox can make binaries built inside it inherit a
+low mandatory integrity label; those binaries remain low-integrity when launched
+later from a regular PowerShell session and cannot update normal user paths.
 
 ## Quick start
 
 Register a configuration repository once, then apply its profile:
 
 ```powershell
-./conenv.exe config C:\path\to\conenv-config
-./conenv.exe apply
-./conenv.exe status
+conenv config C:\path\to\conenv-config
+conenv apply
+conenv status
 ```
 
 Before a default is saved, a command also accepts `--repo DIR`, or uses the working directory when it contains `conenv.yaml`.
@@ -131,5 +135,6 @@ Undo removes destinations that `apply` created, restores the backed-up originals
 gofmt -w cmd internal
 go vet ./...
 go test ./...
-go build ./cmd/conenv
+$out = Join-Path $env:TEMP 'conenv-dev.exe'
+go build -o $out ./cmd/conenv
 ```
