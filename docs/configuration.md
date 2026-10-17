@@ -272,6 +272,7 @@ Paths come from the adapter, so a declaration stays portable:
 | Harness | Configuration | Skills |
 |---|---|---|
 | `codex` | `~/.codex/config.toml` | `~/.agents/skills/<name>` |
+| `dsh` | `~/.dsh/cordis.patch.yml` | `~/.dsh/skills/<name>` |
 | `global` | none, skills only | `~/.agents/skills/<name>` |
 | `pi` | `~/.pi/agent/mcp.json` | `~/.pi/agent/skills/<name>` |
 
@@ -280,6 +281,8 @@ A skill is linked into the directory its own adapter reports, so a harness that 
 `global` publishes a skill to the shared directory without claiming any tool's configuration file, which is the right choice when the content belongs to no single harness: it accepts skills and rejects settings and MCP servers, because those belong to the harness that reads them.
 
 The `pi` adapter renders `mcpServers` into `~/.pi/agent/mcp.json`, the file directly next to Pi's settings. Pi owns `~/.pi/agent/settings.json` and rewrites it itself, so the adapter manages no settings keys and rejects a declared `config` instead of merging keys into a file another tool maintains.
+
+The `dsh` adapter renders `mcpServers` into the user-level loader patch at `~/.dsh/cordis.patch.yml`, which applies to every DeepSeek Harness profile after the profile's own patch. Each server becomes an `@deepseek-ai/dsh-mcp-client` entry, and every other entry, unknown key, and custom `!!js` tag in that file is preserved. DeepSeek Harness keeps plugin settings in profile patches, so the adapter manages no settings keys and rejects a declared `config`. It links skills into `~/.dsh/skills`, the harness private directory; the shared `~/.agents/skills` directory remains available through the `global` agent.
 
 Override a path only when a machine deviates from these defaults:
 
@@ -340,6 +343,22 @@ agents:
     skills:
       - name: pdf-reading
         source: ai/pi/skills/pdf-reading
+    mcpServers:
+      browser:
+        type: stdio
+        command: npx
+        args: [-y, browser-mcp@latest]
+```
+
+DeepSeek Harness uses the same `mcpServers` shape and renders it into `~/.dsh/cordis.patch.yml`:
+
+```yaml
+agents:
+  dsh:
+    harness: dsh
+    skills:
+      - name: pdf-reading
+        source: ai/dsh/skills/pdf-reading
     mcpServers:
       browser:
         type: stdio

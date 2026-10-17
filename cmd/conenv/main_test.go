@@ -640,7 +640,7 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 		t.Fatalf("config --list-agents exit = %d\nstderr: %s", code, stderr)
 	}
 	report := decodeReport(t, stdout)
-	if len(report.Adapters) != 3 || report.Adapters[0].Harness != "codex" || report.Adapters[1].Harness != "global" || report.Adapters[2].Harness != "pi" {
+	if len(report.Adapters) != 4 || report.Adapters[0].Harness != "codex" || report.Adapters[1].Harness != "dsh" || report.Adapters[2].Harness != "global" || report.Adapters[3].Harness != "pi" {
 		t.Fatalf("unexpected adapters: %s", stdout)
 	}
 	if report.Adapters[0].ConfigPath != filepath.Join(home, ".codex", "config.toml") {
@@ -649,17 +649,23 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 	if report.Adapters[0].SkillsDir != filepath.Join(home, ".agents", "skills") {
 		t.Fatalf("skills dir = %s", report.Adapters[0].SkillsDir)
 	}
-	if report.Adapters[1].ConfigPath != "" {
-		t.Fatalf("global owns no configuration file, got %s", report.Adapters[1].ConfigPath)
+	if report.Adapters[1].ConfigPath != filepath.Join(home, ".dsh", "cordis.patch.yml") {
+		t.Fatalf("dsh config path = %s", report.Adapters[1].ConfigPath)
 	}
-	if report.Adapters[1].SkillsDir != filepath.Join(home, ".agents", "skills") {
-		t.Fatalf("global skills dir = %s", report.Adapters[1].SkillsDir)
+	if report.Adapters[1].SkillsDir != filepath.Join(home, ".dsh", "skills") {
+		t.Fatalf("dsh skills dir = %s", report.Adapters[1].SkillsDir)
 	}
-	if report.Adapters[2].ConfigPath != filepath.Join(home, ".pi", "agent", "mcp.json") {
-		t.Fatalf("pi config path = %s", report.Adapters[2].ConfigPath)
+	if report.Adapters[2].ConfigPath != "" {
+		t.Fatalf("global owns no configuration file, got %s", report.Adapters[2].ConfigPath)
 	}
-	if report.Adapters[2].SkillsDir != filepath.Join(home, ".pi", "agent", "skills") {
-		t.Fatalf("pi skills dir = %s", report.Adapters[2].SkillsDir)
+	if report.Adapters[2].SkillsDir != filepath.Join(home, ".agents", "skills") {
+		t.Fatalf("global skills dir = %s", report.Adapters[2].SkillsDir)
+	}
+	if report.Adapters[3].ConfigPath != filepath.Join(home, ".pi", "agent", "mcp.json") {
+		t.Fatalf("pi config path = %s", report.Adapters[3].ConfigPath)
+	}
+	if report.Adapters[3].SkillsDir != filepath.Join(home, ".pi", "agent", "skills") {
+		t.Fatalf("pi skills dir = %s", report.Adapters[3].SkillsDir)
 	}
 
 	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex", "--yes")

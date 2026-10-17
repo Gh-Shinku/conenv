@@ -42,6 +42,7 @@ func Adapters() []AgentAdapter {
 
 func init() {
 	RegisterAdapter(codexAdapter{})
+	RegisterAdapter(dshAdapter{})
 	RegisterAdapter(piAdapter{})
 	RegisterAdapter(globalAdapter{})
 }
