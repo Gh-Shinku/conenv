@@ -29,14 +29,53 @@ func dshParseDocument(t *testing.T, data []byte) *yaml.Node {
 	return root
 }
 
+// dshEntry finds a row anywhere in the patch, including the rows an insert
+// patch adds, which is where the adapter writes its MCP entries.
 func dshEntry(t *testing.T, root *yaml.Node, id string) *yaml.Node {
 	t.Helper()
-	for _, entry := range root.Content[0].Content {
-		if entry.Kind == yaml.MappingNode && nodeValue(mappingValue(entry, "id")) == id {
-			return entry
+	var walk func(entries []*yaml.Node) *yaml.Node
+	walk = func(entries []*yaml.Node) *yaml.Node {
+		for _, entry := range entries {
+			if entry.Kind != yaml.MappingNode {
+				continue
+			}
+			if nodeValue(mappingValue(entry, "id")) == id {
+				return entry
+			}
+			if insert := mappingValue(entry, "insert"); insert != nil && insert.Kind == yaml.SequenceNode {
+				if found := walk(insert.Content); found != nil {
+					return found
+				}
+			}
 		}
+		return nil
+	}
+	if found := walk(root.Content[0].Content); found != nil {
+		return found
 	}
 	t.Fatalf("entry %q not found", id)
+	return nil
+}
+
+// dshInsertedEntry returns the row only when an insert patch adds it, which is
+// the shape the harness actually applies.
+func dshInsertedEntry(t *testing.T, root *yaml.Node, id string) *yaml.Node {
+	t.Helper()
+	for _, patch := range root.Content[0].Content {
+		if patch.Kind != yaml.MappingNode {
+			continue
+		}
+		insert := mappingValue(patch, "insert")
+		if insert == nil || insert.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, row := range insert.Content {
+			if nodeValue(mappingValue(row, "id")) == id {
+				return row
+			}
+		}
+	}
+	t.Fatalf("entry %q is not inside an insert patch", id)
 	return nil
 }
 
@@ -126,10 +165,12 @@ func TestDSHMergePreservesUnmanagedEntriesAndKeys(t *testing.T) {
 	}
 	root := dshParseDocument(t, data)
 
-	if got := len(root.Content[0].Content); got != 4 {
-		t.Fatalf("expected four entries, got %d:\n%s", got, data)
+	if got := len(root.Content[0].Content); got != 2 {
+		t.Fatalf("expected the unmanaged entry plus one insert patch, got %d:\n%s", got, data)
 	}
-	garbro := dshEntry(t, root, "mcp-garbro")
+	// The bare mcp-garbro row the earlier shape wrote is inert in a patch layer,
+	// so merging moves it into the insert patch that adds it.
+	garbro := dshInsertedEntry(t, root, "mcp-garbro")
 	config := mappingValue(garbro, "config")
 	if nodeValue(mappingValue(config, "exposure")) != "direct" {
 		t.Fatalf("unmanaged config key was dropped: %s", data)
@@ -138,19 +179,92 @@ func TestDSHMergePreservesUnmanagedEntriesAndKeys(t *testing.T) {
 	if token == nil || token.Tag != "!!js" || token.Value != "process.env.GARBRO_TOKEN" {
 		t.Fatalf("custom tag inside an untouched config key should survive: %s", data)
 	}
-	docs := mappingValue(dshEntry(t, root, "mcp-docs"), "config")
+	docs := mappingValue(dshInsertedEntry(t, root, "mcp-docs"), "config")
 	if nodeValue(mappingValue(docs, "transport")) != "streamable-http" {
 		t.Fatalf("http transport not rendered: %s", data)
 	}
 	if nodeValue(mappingValue(docs, "url")) != "https://example.com/mcp" {
 		t.Fatalf("http url not rendered: %s", data)
 	}
-	localConfig := mappingValue(dshEntry(t, root, "mcp-local"), "config")
+	localConfig := mappingValue(dshInsertedEntry(t, root, "mcp-local"), "config")
 	if nodeValue(mappingValue(localConfig, "command")) != "/tools/mcp" {
 		t.Fatalf("secret expansion failed: %s", data)
 	}
 	if nodeValue(mappingValue(mappingValue(localConfig, "env"), "TOKEN")) != "s3cret" {
 		t.Fatalf("env secret expansion failed: %s", data)
+	}
+}
+
+func TestDSHInsertsNewServersIntoAnInsertPatch(t *testing.T) {
+	adapter := dshAdapterForTest(t)
+	merged, err := adapter.Merge(dshEmptyPatch(), nil, map[string]MCP{
+		"docs": {Type: "http", URL: "https://example.com/mcp"},
+	}, nil, dshResolved())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := adapter.Serialize(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := dshParseDocument(t, data)
+	if got := len(root.Content[0].Content); got != 1 {
+		t.Fatalf("expected one insert patch, got %d entries:\n%s", got, data)
+	}
+	if !strings.Contains(string(data), "insert:") {
+		t.Fatalf("new server is not wrapped in an insert patch:\n%s", data)
+	}
+	dshInsertedEntry(t, root, "mcp-docs")
+
+	// A second apply over the written shape must not add another patch.
+	parsed, err := adapter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergedAgain, err := adapter.Merge(parsed, nil, map[string]MCP{
+		"docs": {Type: "http", URL: "https://example.com/mcp"},
+	}, nil, dshResolved())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.Serialize(mergedAgain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(dshParseDocument(t, second).Content[0].Content); got != 1 {
+		t.Fatalf("repeat apply added a patch, got %d entries:\n%s", got, second)
+	}
+}
+
+func TestDSHMergeMovesBareEntryIntoAnInsertPatch(t *testing.T) {
+	adapter := dshAdapterForTest(t)
+	document, err := adapter.Parse([]byte(`- id: mcp-docs
+  name: "@deepseek-ai/dsh-mcp-client"
+  config:
+    serverName: docs
+    transport: streamable-http
+    url: https://example.com/old
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := adapter.Merge(document, nil, map[string]MCP{
+		"docs": {Type: "http", URL: "https://example.com/mcp"},
+	}, nil, dshResolved())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := adapter.Serialize(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := dshParseDocument(t, data)
+	if got := len(root.Content[0].Content); got != 1 {
+		t.Fatalf("bare entry was not replaced by an insert patch:\n%s", data)
+	}
+	config := mappingValue(dshInsertedEntry(t, root, "mcp-docs"), "config")
+	if nodeValue(mappingValue(config, "url")) != "https://example.com/mcp" {
+		t.Fatalf("migrated entry kept the old url:\n%s", data)
 	}
 }
 

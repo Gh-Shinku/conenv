@@ -100,28 +100,78 @@ func (dshAdapter) Merge(doc any, config map[string]any, mcp map[string]MCP, _ []
 		return root, nil
 	}
 	sequence := root.Content[0]
+	var created, migrated []*yaml.Node
 	for _, name := range sortedKeys(mcp) {
 		if !dshServerNamePattern.MatchString(name) {
 			return nil, fmt.Errorf("MCP server %q: DSH server names must match [A-Za-z0-9_-]{1,32}", name)
 		}
 		declaration := mcp[name]
-		index, err := findDSHMCPEntry(sequence, name)
+		ref, found, err := findDSHMCPEntry(sequence, name)
 		if err != nil {
 			return nil, err
 		}
-		if index < 0 {
-			entry, err := newDSHMCPEntry(name, declaration, r)
-			if err != nil {
+		if found {
+			if err := mergeDSHMCPEntry(ref.entry, name, declaration, r); err != nil {
 				return nil, err
 			}
-			sequence.Content = append(sequence.Content, entry)
+			if ref.topLevel {
+				migrated = append(migrated, ref.entry)
+			}
 			continue
 		}
-		if err := mergeDSHMCPEntry(sequence.Content[index], name, declaration, r); err != nil {
+		entry, err := newDSHMCPEntry(name, declaration, r)
+		if err != nil {
 			return nil, err
 		}
+		created = append(created, entry)
+	}
+	if len(migrated) > 0 {
+		sequence.Content = withoutDSHEntries(sequence.Content, migrated)
+	}
+	rows := append(append([]*yaml.Node{}, migrated...), created...)
+	if len(rows) > 0 {
+		sequence.Content = append(sequence.Content, dshInsertPatch(rows))
 	}
 	return root, nil
+}
+
+// dshEntryRef locates one managed MCP server entry in the patch document.
+type dshEntryRef struct {
+	entry *yaml.Node
+	// topLevel marks a row written directly into the patch sequence. DSH applies
+	// this file as a patch, so a bare row whose id no bundle layer declares is
+	// skipped with "entry not found"; Merge moves such a row into an insert patch
+	// instead of leaving it inert.
+	topLevel bool
+}
+
+// dshInsertPatch wraps rows in the insert patch that adds plugin rows from a
+// patch layer. DSH reads a patch entry as a row to override; new rows have to
+// arrive inside `insert`.
+func dshInsertPatch(rows []*yaml.Node) *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.MappingNode,
+		Tag:  "!!map",
+		Content: []*yaml.Node{
+			dshScalar("insert"),
+			{Kind: yaml.SequenceNode, Tag: "!!seq", Content: rows},
+		},
+	}
+}
+
+// withoutDSHEntries drops the given rows, keeping the remaining order.
+func withoutDSHEntries(content []*yaml.Node, remove []*yaml.Node) []*yaml.Node {
+	drop := make(map[*yaml.Node]bool, len(remove))
+	for _, node := range remove {
+		drop[node] = true
+	}
+	kept := make([]*yaml.Node, 0, len(content))
+	for _, node := range content {
+		if !drop[node] {
+			kept = append(kept, node)
+		}
+	}
+	return kept
 }
 
 func (dshAdapter) Serialize(doc any) ([]byte, error) {
@@ -172,54 +222,74 @@ func dshEmptyPatch() *yaml.Node {
 }
 
 // findDSHMCPEntry locates the entry that already represents one declared
-// server, so repeated applies update it instead of appending duplicates.
-func findDSHMCPEntry(sequence *yaml.Node, name string) (int, error) {
+// server, so repeated applies update it instead of appending duplicates. The
+// entry may sit in an insert patch (the shape this adapter writes) or directly
+// in the patch sequence (the shape earlier releases wrote).
+func findDSHMCPEntry(sequence *yaml.Node, name string) (dshEntryRef, bool, error) {
 	id := dshMCPEntryPrefix + name
-	idIndex, serverIndex := -1, -1
-	for i, entry := range sequence.Content {
+	var matches []dshEntryRef
+	for _, entry := range sequence.Content {
 		if entry.Kind != yaml.MappingNode {
 			continue
 		}
-		if idNode := mappingValue(entry, "id"); idNode != nil && idNode.Value == id {
-			if idIndex >= 0 {
-				return -1, fmt.Errorf("DSH patch repeats entry id %q", id)
+		if insert := mappingValue(entry, "insert"); insert != nil {
+			if insert.Kind == yaml.SequenceNode {
+				for _, row := range insert.Content {
+					ref, ok, err := dshMCPEntryCandidate(row, id, name, false)
+					if err != nil {
+						return dshEntryRef{}, false, err
+					}
+					if ok {
+						matches = append(matches, ref)
+					}
+				}
 			}
-			idIndex = i
-		}
-		nameNode := mappingValue(entry, "name")
-		if nameNode == nil || nameNode.Value != dshMCPEntryPackage {
 			continue
 		}
-		config := mappingValue(entry, "config")
-		if config == nil || config.Kind != yaml.MappingNode {
-			continue
+		ref, ok, err := dshMCPEntryCandidate(entry, id, name, true)
+		if err != nil {
+			return dshEntryRef{}, false, err
 		}
-		if server := mappingValue(config, "serverName"); server != nil && server.Value == name {
-			if serverIndex >= 0 {
-				return -1, fmt.Errorf("DSH patch declares MCP server %q twice", name)
-			}
-			serverIndex = i
+		if ok {
+			matches = append(matches, ref)
 		}
 	}
-	if idIndex >= 0 && serverIndex >= 0 && idIndex != serverIndex {
-		return -1, fmt.Errorf("DSH patch entry id %q and MCP server %q are declared by different entries", id, name)
+	switch len(matches) {
+	case 0:
+		return dshEntryRef{}, false, nil
+	case 1:
+		return matches[0], true, nil
+	default:
+		return dshEntryRef{}, false, fmt.Errorf("DSH patch declares MCP server %q twice", name)
 	}
-	if idIndex >= 0 {
-		entry := sequence.Content[idIndex]
-		nameNode := mappingValue(entry, "name")
-		if nameNode == nil || nameNode.Value != dshMCPEntryPackage {
-			return -1, fmt.Errorf("DSH patch entry id %q is already used by %q", id, nodeValue(nameNode))
-		}
-		config := mappingValue(entry, "config")
-		if config == nil {
-			return -1, fmt.Errorf("DSH patch entry id %q has no config mapping", id)
-		}
-		if server := mappingValue(config, "serverName"); server != nil && server.Value != name {
-			return -1, fmt.Errorf("DSH patch entry id %q names MCP server %q", id, server.Value)
-		}
-		return idIndex, nil
+}
+
+// dshMCPEntryCandidate reports whether one row represents the managed server,
+// either by the entry id this adapter writes or by the server name it holds, and
+// rejects a row whose id already belongs to another plugin or another server.
+func dshMCPEntryCandidate(row *yaml.Node, id, name string, topLevel bool) (dshEntryRef, bool, error) {
+	if row.Kind != yaml.MappingNode {
+		return dshEntryRef{}, false, nil
 	}
-	return serverIndex, nil
+	entryName := nodeValue(mappingValue(row, "name"))
+	byID := nodeValue(mappingValue(row, "id")) == id
+	serverName := ""
+	if config := mappingValue(row, "config"); config != nil && config.Kind == yaml.MappingNode {
+		serverName = nodeValue(mappingValue(config, "serverName"))
+	}
+	byServer := entryName == dshMCPEntryPackage && serverName == name
+	if byID && !byServer {
+		if entryName != dshMCPEntryPackage {
+			return dshEntryRef{}, false, fmt.Errorf("DSH patch entry id %q is already used by %q", id, entryName)
+		}
+		if serverName != "" && serverName != name {
+			return dshEntryRef{}, false, fmt.Errorf("DSH patch entry id %q names MCP server %q", id, serverName)
+		}
+	}
+	if !byID && !byServer {
+		return dshEntryRef{}, false, nil
+	}
+	return dshEntryRef{entry: row, topLevel: topLevel}, true, nil
 }
 
 func newDSHMCPEntry(name string, declaration MCP, r *Resolved) (*yaml.Node, error) {
