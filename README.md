@@ -77,9 +77,9 @@ Save a scope once and every later `status` or `apply` reuses it without repeatin
 ./conenv.exe config --unset-selection    # back to the whole profile
 ```
 
-`--only` and `--selection` are temporary unless `--save` is given. Interactive `apply` asks whether to save the selection after the plan is confirmed. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, or `COMPONENT/skills/SKILL`.
+`--only` and `--selection` are temporary unless `--save` is given. Interactive `apply` asks whether to save the selection after the plan is confirmed. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/config`, `COMPONENT/agents/AGENT/mcpServers/SERVER`, or `COMPONENT/agents/AGENT/skills/SKILL`.
 
-`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and agent declarations and individual skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
+`--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. Components are selected by default, and agent declarations, settings, individual MCP servers, and skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
 
 ## Agents
 

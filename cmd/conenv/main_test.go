@@ -135,7 +135,7 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 		t.Fatalf("skill-only selection = %#v", agent.Skills)
 	}
 
-	resourcesFiltered, err := filteredResolved(resolved, []string{idsByTitle["Agent resources"]})
+	resourcesFiltered, err := filteredResolved(resolved, []string{idsByTitle["Configuration"]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestFilteredResolvedSeparatesResourcesFromSkills(t *testing.T) {
 	if len(resourcesOnly.Packages) != 0 || len(resourcesOnly.Checks) != 0 {
 		t.Fatalf("agent-only selection retained component resources: %#v", resourcesOnly)
 	}
-	if len(agent.Config) != 1 || len(agent.MCPServers) != 1 {
+	if len(agent.Config) != 1 || len(agent.MCPServers) != 0 {
 		t.Fatalf("resource selection lost agent resources: %#v", agent)
 	}
 	if len(agent.Skills) != 0 {
@@ -162,7 +162,7 @@ func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
 	catalog := newSelectionCatalog(resolved)
 	var selectedIDs []string
 	for _, item := range catalog.items {
-		if item.Title == "Agent resources" || item.Title == "two" {
+		if item.Title == "Configuration" || item.Title == "two" {
 			selectedIDs = append(selectedIDs, item.ID)
 		}
 	}
@@ -170,7 +170,7 @@ func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := conenv.SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/resources", "ai-agents/agents/codex/skills/two"})
+	spec, err := conenv.SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/config", "ai-agents/agents/codex/skills/two"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +180,97 @@ func TestTUISelectionMatchesDeclarativeSelection(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fromTUI.Components, fromFile.Components) {
 		t.Fatalf("TUI selection %#v differs from declarative selection %#v", fromTUI.Components, fromFile.Components)
+	}
+}
+
+func TestTUISelectsAndExportsIndividualMCPServer(t *testing.T) {
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{{
+		Name: "ai-agents", Component: conenv.Component{Agents: testAgent("codex",
+			map[string]any{"model": "example"},
+			map[string]conenv.MCP{"docs": {Type: "http", URL: "https://example.com"}, "browser": {Type: "stdio", Command: "browser"}},
+			conenv.Skill{Name: "one", Source: "one"},
+		)},
+	}}}
+	catalog := newSelectionCatalog(resolved)
+	var selectedIDs []string
+	var servers []string
+	for _, item := range catalog.items {
+		if item.Description == "MCP server" {
+			servers = append(servers, item.Title)
+			if item.Title == "docs" {
+				selectedIDs = append(selectedIDs, item.ID)
+			}
+		}
+	}
+	if !reflect.DeepEqual(servers, []string{"browser", "docs"}) {
+		t.Fatalf("MCP nodes = %v", servers)
+	}
+	narrowed, err := filteredResolved(resolved, selectedIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := selectionSpecFromResolved(narrowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := spec.Components["ai-agents"].Agents["codex"]
+	if entry.Config || len(entry.Skills) != 0 || !reflect.DeepEqual(entry.MCPServers, []string{"docs"}) {
+		t.Fatalf("exported selection = %#v", entry)
+	}
+	replayed, err := conenv.ApplySelection(resolved, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(narrowed.Components, replayed.Components) {
+		t.Fatal("exported selection changed the scope")
+	}
+}
+
+func TestDSHApplySingleMCPServerAndSave(t *testing.T) {
+	home := registerTestEnvironment(t)
+	repository := t.TempDir()
+	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v2
+defaultProfile: base
+profiles:
+  base:
+    components: [ai-agents]
+components:
+  ai-agents:
+    agents:
+      dsh:
+        harness: dsh
+        mcpServers:
+          docs:
+            type: http
+            url: https://example.com/selected
+          other:
+            type: http
+            url: https://example.com/unselected
+`)
+	configPath := filepath.Join(home, ".dsh", "cordis.patch.yml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, configPath, `- id: insert
+  rows:
+    - id: mcp-other
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: other
+        url: https://example.com/existing
+`)
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/dsh/mcpServers/docs", "--yes", "--save"); code != 0 {
+		t.Fatalf("apply exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "https://example.com/selected") || !strings.Contains(string(data), "https://example.com/existing") || strings.Contains(string(data), "https://example.com/unselected") {
+		t.Fatalf("single MCP apply changed other entries: %s", data)
+	}
+	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 0 {
+		t.Fatalf("saved selection status exit = %d\n%s\n%s", code, stdout, stderr)
 	}
 }
 
@@ -728,7 +819,7 @@ func TestAgentConfigPreservesUnmanagedKeys(t *testing.T) {
 	}
 	writeFile(t, configPath, "model = \"keep-me\"\n[mcp_servers.existing]\nurl = \"https://example.com\"\n")
 
-	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex/resources", "--yes"); code != 0 {
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex/config", "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 	data, err := os.ReadFile(configPath)

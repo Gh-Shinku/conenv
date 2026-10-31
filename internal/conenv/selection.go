@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const SelectionSchemaVersion = "conenv/selection/v1"
+const SelectionSchemaVersion = "conenv/selection/v2"
 
 // SelectionSpec narrows a resolved profile to an explicit allowlist. A
 // component selects its own resources and, separately, individual agent
@@ -25,9 +25,14 @@ type SelectionSpec struct {
 }
 
 type ComponentSelection struct {
-	Resources bool                          `yaml:"resources,omitempty" json:"resources,omitempty"`
-	Skills    []string                      `yaml:"skills,omitempty" json:"skills,omitempty"`
-	Agents    map[string]ComponentSelection `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Resources bool                      `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Agents    map[string]AgentSelection `yaml:"agents,omitempty" json:"agents,omitempty"`
+}
+
+type AgentSelection struct {
+	Config     bool     `yaml:"config,omitempty" json:"config,omitempty"`
+	MCPServers []string `yaml:"mcpServers,omitempty" json:"mcpServers,omitempty"`
+	Skills     []string `yaml:"skills,omitempty" json:"skills,omitempty"`
 }
 
 func LoadSelection(path string) (*SelectionSpec, error) {
@@ -68,7 +73,8 @@ func SaveSelection(path string, spec *SelectionSpec) error {
 
 // SelectionFromTargets converts stable resource IDs into a selection spec.
 // Accepted forms are COMPONENT, COMPONENT/resources, COMPONENT/agents/AGENT,
-// COMPONENT/agents/AGENT/resources, and COMPONENT/agents/AGENT/skills/SKILL.
+// COMPONENT/agents/AGENT/config, COMPONENT/agents/AGENT/mcpServers/SERVER,
+// and COMPONENT/agents/AGENT/skills/SKILL.
 func SelectionFromTargets(resolved *Resolved, targets []string) (*SelectionSpec, error) {
 	spec := &SelectionSpec{
 		SchemaVersion: SelectionSchemaVersion,
@@ -109,7 +115,11 @@ func SelectionFromTargets(resolved *Resolved, targets []string) (*SelectionSpec,
 }
 
 func (selection ComponentSelection) selectsAnything() bool {
-	return selection.Resources || len(selection.Skills) > 0 || len(selection.Agents) > 0
+	return selection.Resources || len(selection.Agents) > 0
+}
+
+func (selection AgentSelection) selectsAnything() bool {
+	return selection.Config || len(selection.MCPServers) > 0 || len(selection.Skills) > 0
 }
 
 // componentSelection selects everything a component declares.
@@ -117,7 +127,7 @@ func componentSelection(component NamedComponent) ComponentSelection {
 	selected := ComponentSelection{Resources: HasComponentResources(component.Component)}
 	for _, name := range agentNames(component.Component) {
 		agent := component.Agents[name]
-		selection := ComponentSelection{Resources: agent.ManagesConfig()}
+		selection := AgentSelection{Config: len(agent.Config) > 0, MCPServers: sortedKeys(agent.MCPServers)}
 		for _, skill := range agent.Skills {
 			selection.Skills = append(selection.Skills, skill.Name)
 		}
@@ -125,7 +135,7 @@ func componentSelection(component NamedComponent) ComponentSelection {
 			continue
 		}
 		if selected.Agents == nil {
-			selected.Agents = map[string]ComponentSelection{}
+			selected.Agents = map[string]AgentSelection{}
 		}
 		selected.Agents[name] = selection
 	}
@@ -147,22 +157,31 @@ func selectAgentTarget(component NamedComponent, suffix string, selected *Compon
 		return "", fmt.Errorf("unknown agent %q", agentName)
 	}
 	if selected.Agents == nil {
-		selected.Agents = map[string]ComponentSelection{}
+		selected.Agents = map[string]AgentSelection{}
 	}
 	entry := selected.Agents[agentName]
 	switch {
 	case agentSuffix == "":
-		entry.Resources = agent.ManagesConfig()
+		entry.Config = len(agent.Config) > 0
+		entry.MCPServers = sortedKeys(agent.MCPServers)
 		for _, skill := range agent.Skills {
 			if !contains(entry.Skills, skill.Name) {
 				entry.Skills = append(entry.Skills, skill.Name)
 			}
 		}
-	case agentSuffix == "resources":
-		if !agent.ManagesConfig() {
-			return "", fmt.Errorf("agent %q has no configuration or MCP servers", agentName)
+	case agentSuffix == "config":
+		if len(agent.Config) == 0 {
+			return "", fmt.Errorf("agent %q has no configuration", agentName)
 		}
-		entry.Resources = true
+		entry.Config = true
+	case strings.HasPrefix(agentSuffix, "mcpServers/") && strings.TrimPrefix(agentSuffix, "mcpServers/") != "":
+		server := strings.TrimPrefix(agentSuffix, "mcpServers/")
+		if _, ok := agent.MCPServers[server]; !ok {
+			return "", fmt.Errorf("agent %q has no MCP server %q", agentName, server)
+		}
+		if !contains(entry.MCPServers, server) {
+			entry.MCPServers = append(entry.MCPServers, server)
+		}
 	case strings.HasPrefix(agentSuffix, "skills/") && strings.TrimPrefix(agentSuffix, "skills/") != "":
 		skillName := strings.TrimPrefix(agentSuffix, "skills/")
 		if !agent.hasSkill(skillName) {
@@ -172,7 +191,7 @@ func selectAgentTarget(component NamedComponent, suffix string, selected *Compon
 			entry.Skills = append(entry.Skills, skillName)
 		}
 	default:
-		return "", fmt.Errorf("agent %q target %q must be resources or skills/SKILL", agentName, agentSuffix)
+		return "", fmt.Errorf("agent %q target %q must be config, mcpServers/SERVER, or skills/SKILL", agentName, agentSuffix)
 	}
 	selected.Agents[agentName] = entry
 	return agentSuffix, nil
@@ -223,16 +242,6 @@ func ApplySelection(resolved *Resolved, spec *SelectionSpec) (*Resolved, error) 
 		if selection.Resources && !HasComponentResources(component.Component) {
 			return nil, fmt.Errorf("component %q has no component resources", name)
 		}
-		seenSkills := map[string]bool{}
-		for _, skill := range selection.Skills {
-			if seenSkills[skill] {
-				return nil, fmt.Errorf("component %q repeats skill %q", name, skill)
-			}
-			seenSkills[skill] = true
-			if !componentHasSkill(component, skill) {
-				return nil, fmt.Errorf("component %q has no skill %q", name, skill)
-			}
-		}
 		for _, agentName := range sortedKeys(selection.Agents) {
 			entry := selection.Agents[agentName]
 			// An empty entry is a deselected placeholder from the interactive
@@ -244,8 +253,18 @@ func ApplySelection(resolved *Resolved, spec *SelectionSpec) (*Resolved, error) 
 			if !ok {
 				return nil, fmt.Errorf("component %q has no agent %q or it is unsupported here", name, agentName)
 			}
-			if entry.Resources && !agent.ManagesConfig() {
-				return nil, fmt.Errorf("agent %q in component %q has no configuration or MCP servers", agentName, name)
+			if entry.Config && len(agent.Config) == 0 {
+				return nil, fmt.Errorf("agent %q in component %q has no configuration", agentName, name)
+			}
+			seenServers := map[string]bool{}
+			for _, server := range entry.MCPServers {
+				if seenServers[server] {
+					return nil, fmt.Errorf("agent %q in component %q repeats MCP server %q", agentName, name, server)
+				}
+				seenServers[server] = true
+				if _, ok := agent.MCPServers[server]; !ok {
+					return nil, fmt.Errorf("agent %q in component %q has no MCP server %q", agentName, name, server)
+				}
 			}
 			seenAgentSkills := map[string]bool{}
 			for _, skill := range entry.Skills {
@@ -284,9 +303,15 @@ func ApplySelection(resolved *Resolved, spec *SelectionSpec) (*Resolved, error) 
 				continue
 			}
 			narrowed := agent
-			if !entry.Resources {
+			if !entry.Config {
 				narrowed.Config = nil
-				narrowed.MCPServers = nil
+			}
+			narrowed.MCPServers = nil
+			for _, server := range entry.MCPServers {
+				if narrowed.MCPServers == nil {
+					narrowed.MCPServers = map[string]MCP{}
+				}
+				narrowed.MCPServers[server] = agent.MCPServers[server]
 			}
 			narrowed.Skills = nil
 			for _, skill := range agent.Skills {
@@ -333,15 +358,6 @@ func validateSelectionShape(spec *SelectionSpec) error {
 		}
 	}
 	return nil
-}
-
-func componentHasSkill(component NamedComponent, name string) bool {
-	for _, agentName := range agentNames(component.Component) {
-		if component.Agents[agentName].hasSkill(name) {
-			return true
-		}
-	}
-	return false
 }
 
 func contains(values []string, target string) bool {

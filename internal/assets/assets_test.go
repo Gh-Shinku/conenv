@@ -34,3 +34,26 @@ func TestManifestSchemaIsEmbeddedJSON(t *testing.T) {
 		t.Fatal("component definition still declares the removed codex block")
 	}
 }
+
+func TestSelectionSchemaSeparatesAgentResources(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(SelectionSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	if got := properties["schemaVersion"].(map[string]any)["const"]; got != "conenv/selection/v2" {
+		t.Fatalf("selection schema version = %v", got)
+	}
+	defs := schema["$defs"].(map[string]any)
+	agent := defs["agent"].(map[string]any)
+	if agent["additionalProperties"] != false {
+		t.Fatal("agent selection must reject unknown fields")
+	}
+	fields := agent["properties"].(map[string]any)
+	if len(fields) != 3 || fields["config"] == nil || fields["mcpServers"] == nil || fields["skills"] == nil {
+		t.Fatalf("agent selection fields = %v", fields)
+	}
+	if defs["names"].(map[string]any)["uniqueItems"] != true {
+		t.Fatal("server and skill lists must reject duplicates")
+	}
+}

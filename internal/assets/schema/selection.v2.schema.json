@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conenv.dev/schema/selection.v2.schema.json",
+  "title": "conenv selection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profile", "components"],
+  "properties": {
+    "schemaVersion": { "const": "conenv/selection/v2" },
+    "profile": { "type": "string", "pattern": "\\S" },
+    "components": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "\\S" },
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    }
+  },
+  "$defs": {
+    "names": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resources": { "type": "boolean", "description": "Select packages, files, and checks." },
+        "agents": { "type": "object", "additionalProperties": { "$ref": "#/$defs/agent" } }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": { "type": "boolean", "description": "Select declared agent settings." },
+        "mcpServers": { "$ref": "#/$defs/names" },
+        "skills": { "$ref": "#/$defs/names" }
+      }
+    }
+  }
+}

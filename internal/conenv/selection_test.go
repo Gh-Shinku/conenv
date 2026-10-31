@@ -15,6 +15,10 @@ func selectionTestRepository() *Resolved {
 			"codex": {
 				Name: "codex", Harness: "codex",
 				Config: map[string]any{"model": "example"},
+				MCPServers: map[string]MCP{
+					"docs":    {Type: "http", URL: "https://example.com/docs"},
+					"browser": {Type: "stdio", Command: "browser"},
+				},
 				Skills: []Skill{{Name: "project-bootstrap", Source: "project"}, {Name: "vibe-bootstrap", Source: "vibe"}},
 			},
 		}}},
@@ -63,7 +67,7 @@ func TestSelectionSelectsWholeComponentAndAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 2 {
+	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Config || len(selected.Agents["codex"].Skills) != 2 || !reflect.DeepEqual(selected.Agents["codex"].MCPServers, []string{"browser", "docs"}) {
 		t.Fatalf("whole component selection = %#v", selected)
 	}
 
@@ -71,16 +75,16 @@ func TestSelectionSelectsWholeComponentAndAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 2 {
+	if selected := spec.Components["ai-agents"]; !selected.Agents["codex"].Config || len(selected.Agents["codex"].Skills) != 2 || !reflect.DeepEqual(selected.Agents["codex"].MCPServers, []string{"browser", "docs"}) {
 		t.Fatalf("whole agent selection = %#v", selected)
 	}
 
-	spec, err = SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/resources"})
+	spec, err = SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/config"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	selected := spec.Components["ai-agents"]
-	if !selected.Agents["codex"].Resources || len(selected.Agents["codex"].Skills) != 0 {
+	if !selected.Agents["codex"].Config || len(selected.Agents["codex"].Skills) != 0 {
 		t.Fatalf("resource-only agent selection = %#v", selected)
 	}
 }
@@ -103,11 +107,11 @@ func TestSelectionRejectsUnknownTargets(t *testing.T) {
 func TestSelectionRejectsUnknownAndDuplicateSkills(t *testing.T) {
 	resolved := selectionTestRepository()
 	for _, spec := range []*SelectionSpec{
-		{SchemaVersion: SelectionSchemaVersion, Profile: "other", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"project-bootstrap"}}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "other", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]AgentSelection{"codex": {Skills: []string{"project-bootstrap"}}}}}},
 		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"missing": {Resources: true}}},
-		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"project-bootstrap", "project-bootstrap"}}}}}},
-		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Skills: []string{"missing"}}}}}},
-		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"claude": {Resources: true}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]AgentSelection{"codex": {Skills: []string{"project-bootstrap", "project-bootstrap"}}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]AgentSelection{"codex": {Skills: []string{"missing"}}}}}},
+		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]AgentSelection{"claude": {Config: true}}}}},
 		{SchemaVersion: SelectionSchemaVersion, Profile: "personal", Components: map[string]ComponentSelection{"ai-agents": {}}},
 	} {
 		if _, err := ApplySelection(resolved, spec); err == nil {
@@ -116,19 +120,75 @@ func TestSelectionRejectsUnknownAndDuplicateSkills(t *testing.T) {
 	}
 }
 
-func TestSelectionAgentResourcesSelectsConfigOnly(t *testing.T) {
+func TestSelectionConfigSelectsConfigOnly(t *testing.T) {
 	resolved := selectionTestRepository()
 	spec := &SelectionSpec{
 		SchemaVersion: SelectionSchemaVersion, Profile: "personal",
-		Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]ComponentSelection{"codex": {Resources: true}}}},
+		Components: map[string]ComponentSelection{"ai-agents": {Agents: map[string]AgentSelection{"codex": {Config: true}}}},
 	}
 	filtered, err := ApplySelection(resolved, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	agent := filtered.Components[0].Agents["codex"]
-	if len(agent.Config) == 0 || len(agent.Skills) != 0 {
+	if len(agent.Config) == 0 || len(agent.Skills) != 0 || len(agent.MCPServers) != 0 {
 		t.Fatalf("resource-only selection = %#v", agent)
+	}
+}
+
+func TestSelectionMCPServerRoundTripAndAllowlist(t *testing.T) {
+	resolved := selectionTestRepository()
+	spec, err := SelectionFromTargets(resolved, []string{"ai-agents/agents/codex/mcpServers/docs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "selection.yaml")
+	if err := SaveSelection(path, spec); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSelection(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A server added after saving is not implicitly selected.
+	original := resolved.Components[1].Agents["codex"]
+	original.MCPServers["new"] = MCP{Type: "stdio", Command: "new"}
+	filtered, err := ApplySelection(resolved, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filtered.Components[0].Agents["codex"]
+	if len(agent.Config) != 0 || len(agent.Skills) != 0 || len(agent.MCPServers) != 1 || agent.MCPServers["docs"].URL == "" {
+		t.Fatalf("MCP-only selection = %#v", agent)
+	}
+	delete(agent.MCPServers, "docs")
+	if len(original.MCPServers) != 3 {
+		t.Fatal("selection mutated the original server map")
+	}
+	for _, servers := range [][]string{{"missing"}, {"docs", "docs"}} {
+		entry := loaded.Components["ai-agents"]
+		entry.Agents["codex"] = AgentSelection{MCPServers: servers}
+		if _, err := ApplySelection(resolved, loaded); err == nil {
+			t.Fatalf("accepted invalid MCP selection %v", servers)
+		}
+	}
+}
+
+func TestSelectionRejectsOldAgentResources(t *testing.T) {
+	if _, err := SelectionFromTargets(selectionTestRepository(), []string{"ai-agents/agents/codex/resources"}); err == nil {
+		t.Fatal("accepted removed resources target")
+	}
+	for _, data := range []string{
+		"schemaVersion: conenv/selection/v1\nprofile: personal\ncomponents:\n  git:\n    resources: true\n",
+		"schemaVersion: conenv/selection/v2\nprofile: personal\ncomponents:\n  ai-agents:\n    agents:\n      codex:\n        resources: true\n",
+	} {
+		path := filepath.Join(t.TempDir(), "selection.yaml")
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSelection(path); err == nil {
+			t.Fatal("accepted removed selection format")
+		}
 	}
 }
 
@@ -189,7 +249,7 @@ components:
 
 func TestLoadSelectionRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "selection.yaml")
-	data := "schemaVersion: conenv/selection/v1\nprofile: personal\ncomponents:\n  git:\n    resources: true\n    surprise: true\n"
+	data := "schemaVersion: conenv/selection/v2\nprofile: personal\ncomponents:\n  git:\n    resources: true\n    surprise: true\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}

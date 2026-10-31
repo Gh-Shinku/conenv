@@ -29,7 +29,8 @@ const (
 	selectComponent selectionTargetKind = iota
 	selectComponentResources
 	selectAgent
-	selectAgentResources
+	selectAgentConfig
+	selectMCPServer
 	selectSkill
 )
 
@@ -38,6 +39,7 @@ type selectionTarget struct {
 	kind      selectionTargetKind
 	agent     string
 	skill     string
+	server    string
 }
 
 type selectionCatalog struct {
@@ -203,8 +205,10 @@ func selectionFromIDs(resolved *conenv.Resolved, selectedIDs []string) (*conenv.
 			targets = append(targets, target.component+"/resources")
 		case selectAgent:
 			targets = append(targets, target.component+"/agents/"+target.agent)
-		case selectAgentResources:
-			targets = append(targets, target.component+"/agents/"+target.agent+"/resources")
+		case selectAgentConfig:
+			targets = append(targets, target.component+"/agents/"+target.agent+"/config")
+		case selectMCPServer:
+			targets = append(targets, target.component+"/agents/"+target.agent+"/mcpServers/"+target.server)
 		case selectSkill:
 			targets = append(targets, target.component+"/agents/"+target.agent+"/skills/"+target.skill)
 		}
@@ -288,12 +292,24 @@ func newSelectionCatalog(resolved *conenv.Resolved) selectionCatalog {
 				ID: agentID, ParentID: rootID, Title: name, Description: "Agent (harness " + agent.Harness + ")",
 			})
 			catalog.targets[agentID] = selectionTarget{component: component.Name, kind: selectAgent, agent: name}
-			if agent.ManagesConfig() {
-				configID := agentID + ":resources"
+			if len(agent.Config) > 0 {
+				configID := agentID + ":config"
 				catalog.items = append(catalog.items, tui.Item{
-					ID: configID, ParentID: agentID, Title: "Agent resources", Description: "Configuration and MCP servers",
+					ID: configID, ParentID: agentID, Title: "Configuration", Description: "Agent settings",
 				})
-				catalog.targets[configID] = selectionTarget{component: component.Name, kind: selectAgentResources, agent: name}
+				catalog.targets[configID] = selectionTarget{component: component.Name, kind: selectAgentConfig, agent: name}
+			}
+			servers := make([]string, 0, len(agent.MCPServers))
+			for server := range agent.MCPServers {
+				servers = append(servers, server)
+			}
+			sort.Strings(servers)
+			for _, server := range servers {
+				serverID := agentID + ":mcp:" + server
+				catalog.items = append(catalog.items, tui.Item{
+					ID: serverID, ParentID: agentID, Title: server, Description: "MCP server",
+				})
+				catalog.targets[serverID] = selectionTarget{component: component.Name, kind: selectMCPServer, agent: name, server: server}
 			}
 			for _, skill := range agent.Skills {
 				skillID := fmt.Sprintf("%s:skill:%s", agentID, skill.Name)

@@ -366,13 +366,13 @@ agents:
         args: [-y, browser-mcp@latest]
 ```
 
-When `--select` is used, a component shows its agent as a child node, and each agent exposes its configuration and MCP servers as an `Agent resources` child plus one node per skill. Resource IDs follow the same shape: `ai-agents/agents/codex`, `ai-agents/agents/codex/resources`, and `ai-agents/agents/codex/skills/release-notes`.
+When `--select` is used, a component shows its agent as a child node, and each agent exposes a `Configuration` child when it declares settings, one node per MCP server, and one node per skill. Each resource can be toggled independently. Resource IDs follow the same shape: `ai-agents/agents/codex`, `ai-agents/agents/codex/config`, `ai-agents/agents/codex/mcpServers/browser`, and `ai-agents/agents/codex/skills/release-notes`.
 
 ## Planning, drift, and recovery
 
 `conenv apply --dry-run` reports changes without mutating the machine. `conenv status` reports the same drift and exits with status `3` when actions are pending. Applying the same manifest twice is a no-op.
 
-Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; agents and individual skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
+Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. Components and their nested resources are selected by default; agents, settings, individual MCP servers, and skills can be toggled independently, and `~` marks a partially selected parent. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
 
 A scope given on one command is temporary. To stop repeating the same arguments, save it as the machine default, which every later `apply` and `status` reads:
 
@@ -386,7 +386,7 @@ conenv config --unset-selection
 The saved selection lives in `~/.conenv/selection.yaml`, and `conenv config` reports the path and the scope source. `conenv apply --select --write selection.yaml` exports the same choice to any file, which `--selection selection.yaml` replays:
 
 ```yaml
-schemaVersion: conenv/selection/v1
+schemaVersion: conenv/selection/v2
 profile: personal
 components:
   git:
@@ -394,12 +394,14 @@ components:
   ai-agents:
     agents:
       codex:
-        resources: true
+        config: true
+        mcpServers:
+          - browser
         skills:
           - release-notes
 ```
 
-The file is an explicit allowlist: omitted components and newly added resources are not selected. At component level, `resources` covers packages, files, and checks, while `agents` selects individual agent declarations; inside an agent, `resources` covers its configuration and MCP servers and `skills` selects individual skills. Unknown profiles, components, agents, skills, fields, and duplicate skills are errors. For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/resources`, or `COMPONENT/agents/AGENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
+The file is an explicit allowlist: omitted components and newly added resources are not selected. At component level, `resources` covers packages, files, and checks, while `agents` selects individual agent declarations; inside an agent, `config` selects settings, `mcpServers` lists individual server names, and `skills` lists individual skill names. Selecting a server leaves settings and other servers unselected; applying it preserves other entries already in the target file. Deselecting a resource does not uninstall it. Unknown profiles, components, agents, MCP servers, skills, fields, and duplicate server or skill names are errors. Selection files use `conenv/selection/v2`; replace old agent `resources: true` with `config: true` (if settings are declared) and an explicit `mcpServers` list. The old version and agent `resources` field are rejected. The selection JSON Schema is [selection.v2.schema.json](../internal/assets/schema/selection.v2.schema.json). For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/config`, `COMPONENT/agents/AGENT/mcpServers/SERVER`, or `COMPONENT/agents/AGENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
 
 Before replacing a destination, conenv stores its current contents under:
 

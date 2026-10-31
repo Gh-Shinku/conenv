@@ -1184,8 +1184,16 @@ func selectionSpecFromResolved(resolved *conenv.Resolved) (*conenv.SelectionSpec
 		for _, name := range names {
 			agent := component.Agents[name]
 			prefix := component.Name + "/agents/" + name
-			if agent.ManagesConfig() {
-				targets = append(targets, prefix+"/resources")
+			if len(agent.Config) > 0 {
+				targets = append(targets, prefix+"/config")
+			}
+			servers := make([]string, 0, len(agent.MCPServers))
+			for server := range agent.MCPServers {
+				servers = append(servers, server)
+			}
+			sort.Strings(servers)
+			for _, server := range servers {
+				targets = append(targets, prefix+"/mcpServers/"+server)
 			}
 			for _, skill := range agent.Skills {
 				targets = append(targets, prefix+"/skills/"+skill.Name)
