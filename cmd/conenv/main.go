@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"conenv/internal/conenv"
 )
@@ -21,18 +22,6 @@ var version = "dev"
 // stdin is the interactive input source. It is a variable so tests can drive
 // prompts and the line-mode selector without a terminal.
 var stdin io.Reader = os.Stdin
-
-type stringList []string
-
-func (values *stringList) String() string { return strings.Join(*values, ",") }
-
-func (values *stringList) Set(value string) error {
-	if strings.TrimSpace(value) == "" {
-		return errors.New("selection target must not be empty")
-	}
-	*values = append(*values, value)
-	return nil
-}
 
 var errSelectionCancelled = errors.New("component selection cancelled")
 
@@ -62,19 +51,14 @@ func run(args []string) int {
 }
 
 func isHelp(args []string) bool {
-	for _, arg := range args {
-		if arg == "--help" || arg == "-h" || arg == "help" {
-			return true
-		}
-	}
-	return false
+	return len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")
 }
 
 // replacements point legacy command names at their current equivalent so a
 // removed command fails with a usable suggestion instead of a bare error.
 var replacements = map[string]string{
 	"validate":  "config --check",
-	"plan":      "apply --dry-run",
+	"plan":      "apply --select",
 	"doctor":    "status --check",
 	"restore":   "apply --undo",
 	"undo":      "apply --undo",
@@ -112,7 +96,7 @@ type repositoryFlags struct {
 	json    bool
 }
 
-func (flags *repositoryFlags) register(fs *flag.FlagSet) {
+func (flags *repositoryFlags) register(fs *pflag.FlagSet) {
 	fs.StringVar(&flags.repo, "repo", "", "configuration repository")
 	fs.StringVar(&flags.profile, "profile", "", "profile name")
 	fs.BoolVar(&flags.json, "json", false, "emit JSON")
@@ -129,13 +113,11 @@ func (flags repositoryFlags) validate() error {
 type scopeFlags struct {
 	selectComponents bool
 	selection        string
-	only             stringList
 }
 
-func (flags *scopeFlags) register(fs *flag.FlagSet) {
+func (flags *scopeFlags) register(fs *pflag.FlagSet) {
 	fs.BoolVar(&flags.selectComponents, "select", false, "interactively select components")
 	fs.StringVar(&flags.selection, "selection", "", "load an exact selection from YAML")
-	fs.Var(&flags.only, "only", "select a component or nested resource (repeatable)")
 }
 
 func (flags scopeFlags) validate() error {
@@ -146,11 +128,8 @@ func (flags scopeFlags) validate() error {
 	if flags.selection != "" {
 		modes++
 	}
-	if len(flags.only) > 0 {
-		modes++
-	}
 	if modes > 1 {
-		return errors.New("use only one of --select, --selection, and --only")
+		return errors.New("use only one of --select and --selection")
 	}
 	return nil
 }
@@ -161,7 +140,6 @@ const (
 	scopeDefault scopeOrigin = "profile"
 	scopeSaved   scopeOrigin = "saved selection"
 	scopeFile    scopeOrigin = "selection file"
-	scopeOnly    scopeOrigin = "only targets"
 )
 
 // loadScope resolves a repository, profile, and optional narrowing into the
@@ -181,7 +159,7 @@ func loadScope(repository string, flags scopeFlags, profile string, deferRuntime
 		return nil, "", err
 	}
 	requestedProfile := profile
-	if requestedProfile == "" && len(flags.only) == 0 && flags.selection == "" && saved != nil {
+	if requestedProfile == "" && flags.selection == "" && saved != nil {
 		requestedProfile = saved.Profile
 	}
 	resolved, err := conenv.LoadProfile(selected.Path, requestedProfile)
@@ -208,17 +186,6 @@ func loadScope(repository string, flags scopeFlags, profile string, deferRuntime
 		narrowed.SelectionSource = string(scopeFile)
 		conenv.ReconcileMCPSelection(resolved, narrowed)
 		return narrowed, scopeFile, nil
-	case len(flags.only) > 0:
-		spec, err := conenv.SelectionFromTargets(resolved, flags.only)
-		if err != nil {
-			return nil, "", err
-		}
-		narrowed, err := conenv.ApplySelection(resolved, spec)
-		if err != nil {
-			return nil, "", err
-		}
-		narrowed.SelectionSource = string(scopeOnly)
-		return narrowed, scopeOnly, nil
 	}
 	if saved != nil && profile == "" {
 		narrowed, err := conenv.ApplySelection(resolved, saved)
@@ -323,7 +290,7 @@ type componentInfo struct {
 }
 
 func runConfig(args []string) int {
-	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	var options configOptions
 	options.register(fs)
 	fs.BoolVar(&options.unset, "unset", false, "clear the default configuration repository")
@@ -336,7 +303,10 @@ func runConfig(args []string) int {
 	fs.BoolVar(&options.unsetSelection, "unset-selection", false, "clear the saved default selection")
 	fs.StringVar(&options.write, "write", "", "write the saved selection to a file")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0
+		}
+		return fail(err, 2)
 	}
 	if fs.NArg() > 1 {
 		return fail(errors.New("usage: conenv config [DIR]"), 2)
@@ -413,7 +383,7 @@ func runConfig(args []string) int {
 	return emitConfigReport(report, options.json)
 }
 
-func (options *configOptions) register(fs *flag.FlagSet) {
+func (options *configOptions) register(fs *pflag.FlagSet) {
 	options.repositoryFlags.register(fs)
 }
 
@@ -745,11 +715,10 @@ func profileView(resolved *conenv.Resolved) *scopeView {
 type applyOptions struct {
 	repositoryFlags
 	scopeFlags
-	dryRun bool
-	yes    bool
-	write  string
-	undo   bool
-	list   bool
+	yes   bool
+	write string
+	undo  bool
+	list  bool
 }
 
 type applyCommandResult struct {
@@ -760,17 +729,19 @@ type applyCommandResult struct {
 }
 
 func runApply(args []string) int {
-	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("apply", pflag.ContinueOnError)
 	var options applyOptions
 	options.repositoryFlags.register(fs)
 	options.scopeFlags.register(fs)
-	fs.BoolVar(&options.dryRun, "dry-run", false, "preview resource changes and save the selected scope")
 	fs.BoolVar(&options.yes, "yes", false, "apply without prompting")
 	fs.StringVar(&options.write, "write", "", "write the selected scope to a selection file")
 	fs.BoolVar(&options.undo, "undo", false, "undo a recorded run instead of applying")
 	fs.BoolVar(&options.list, "list", false, "list recorded runs (requires --undo)")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0
+		}
+		return fail(err, 2)
 	}
 	if fs.NArg() > 1 {
 		return fail(errors.New("usage: conenv apply [--undo [RUN_ID]]"), 2)
@@ -789,8 +760,8 @@ func (options applyOptions) validate() error {
 		return err
 	}
 	if options.undo {
-		if options.selectComponents || len(options.only) > 0 || options.selection != "" || options.write != "" {
-			return errors.New("--undo cannot be combined with --select, --only, --selection, or --write")
+		if options.selectComponents || options.selection != "" || options.write != "" {
+			return errors.New("--undo cannot be combined with --select, --selection, or --write")
 		}
 		return nil
 	}
@@ -819,7 +790,7 @@ func applyChanges(options applyOptions, runID string) int {
 			output = os.Stderr
 		}
 		if canUseTUI(stdin, output) {
-			result, err := runComponentTUI(stdin, output, resolved, !options.yes && !options.dryRun)
+			result, err := runComponentTUI(stdin, output, resolved, !options.yes)
 			if err != nil {
 				return failSelection(err)
 			}
@@ -830,7 +801,7 @@ func applyChanges(options applyOptions, runID string) int {
 			if err != nil {
 				return failSelection(err)
 			}
-			confirmed = result.Confirmed && !options.yes && !options.dryRun
+			confirmed = result.Confirmed && !options.yes
 		} else {
 			if err := chooseComponentsLineMode(stdin, output, resolved); err != nil {
 				return failSelection(err)
@@ -881,19 +852,6 @@ func applyChanges(options applyOptions, runID string) int {
 		}
 	}
 
-	if options.dryRun {
-		if err := saveSelection(); err != nil {
-			return fail(err, 1)
-		}
-		if options.json {
-			if err := writeJSON(result); err != nil {
-				return fail(err, 1)
-			}
-		} else {
-			printPlan(plan, origin)
-		}
-		return 0
-	}
 	if !options.json {
 		if err := printPlan(plan, origin); err != nil {
 			return fail(err, 1)
@@ -966,16 +924,6 @@ func undoApply(options applyOptions, requestedRun string) int {
 	plan, err := conenv.PlanRestore(runID)
 	if err != nil {
 		return fail(err, 1)
-	}
-	if options.dryRun {
-		if options.json {
-			if err := writeJSON(plan); err != nil {
-				return fail(err, 1)
-			}
-		} else {
-			printUndoPlan(run, plan)
-		}
-		return 0
 	}
 	if !options.yes {
 		if !isInteractive() {
@@ -1052,13 +1000,16 @@ type statusOptions struct {
 }
 
 func runStatus(args []string) int {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("status", pflag.ContinueOnError)
 	var options statusOptions
 	options.repositoryFlags.register(fs)
 	options.scopeFlags.register(fs)
 	fs.BoolVar(&options.check, "check", false, "run health checks for the current scope")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0
+		}
+		return fail(err, 2)
 	}
 	if fs.NArg() != 0 {
 		return fail(errors.New("status does not accept positional arguments"), 2)
@@ -1291,10 +1242,10 @@ Usage:
   conenv config [DIR] [--unset | --check | --profiles | --components
                  | --profile-detail NAME | --component-detail NAME
                  | --unset-selection | --write FILE]
-  conenv apply  [--dry-run] [--select | --selection FILE | --only TARGET...]
+  conenv apply  [--select | --selection FILE]
                 [--write FILE] [--yes]
-  conenv apply  --undo [RUN_ID] [--list] [--dry-run] [--yes]
-  conenv status [--check] [--select | --selection FILE | --only TARGET...]
+  conenv apply  --undo [RUN_ID] [--list] [--yes]
+  conenv status [--check] [--select | --selection FILE]
 
 Common flags: [--repo DIR] [--profile NAME] [--json]
 
@@ -1302,7 +1253,7 @@ Scopes:
   A command uses the scope given on the command line. Otherwise it uses the
   selection saved in ~/.conenv/selection.yaml, and falls back to the whole
   profile resolved from the configuration repository. Every successful apply
-  saves its final scope, including --dry-run; failure or cancellation leaves
+  saves its final scope; failure or cancellation leaves
   the saved scope unchanged. Clear it with "conenv config --unset-selection".
 
 Exit status:

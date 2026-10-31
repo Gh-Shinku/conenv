@@ -340,8 +340,7 @@ func HasComponentResources(component Component) bool {
 }
 
 // ReconcileMCPSelection removes declared servers omitted from an authoritative
-// selection. Temporary --only scopes use ApplySelection alone and leave others
-// untouched. Servers selected by another component for the same agent survive.
+// selection. Servers selected by another component for the same agent survive.
 func ReconcileMCPSelection(full, selected *Resolved) {
 	kept := map[string]map[string]bool{}
 	indices := map[string]int{}

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://conenv.dev/schema/selection.v2.schema.json",
   "title": "conenv selection",
-  "description": "The scope saved by every successful apply, including dry runs. Failure or cancellation preserves the previous saved selection.",
+  "description": "The scope saved by every successful apply. Failure or cancellation preserves the previous saved selection.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "profile", "components"],

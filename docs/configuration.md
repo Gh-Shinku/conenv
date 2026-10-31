@@ -370,15 +370,15 @@ When `--select` is used, a component shows its agent as a child node, and each a
 
 ## Planning, drift, and recovery
 
-`conenv apply --dry-run` reports resource changes and saves the selected scope without modifying target resources. `conenv status` reports the same drift and exits with status `3` when actions are pending. Applying the same manifest twice is a no-op.
+`conenv apply --select` previews the plan before confirmation; Escape returns to the checklist and cancelling leaves resources and the saved selection unchanged. `conenv status` reports drift and exits with status `3` when actions are pending. Applying the same manifest twice is a no-op.
 
 Add `--select` to `apply` or `status` to open an interactive hierarchical checklist containing the profile's components supported by the current platform. The checklist starts from the saved selection for that profile, or selects all resources when no selection is saved. Agents, settings, individual MCP servers, and skills can be toggled independently, and `~` marks a partially selected parent. Resources excluded by the saved choice remain visible so they can be selected again. Move with the arrow keys or `j`/`k`, toggle with Space, use `a` or `n` for all or none, and press `/` to filter. Enter continues and `q` cancels. Interactive `apply` then previews the generated plan; Escape returns to the checklist and Enter confirms it. `--yes` skips that preview and confirmation.
 
-Every successful `apply` saves its final scope, including choices supplied through `--select`, `--only`, or `--selection`, and when no file changes are needed. Every later `apply`, `status`, and selector reads that choice. Cancelling or a failed apply leaves the previous choice unchanged. `--dry-run` saves the choice without changing target resources:
+Every successful `apply` saves its final scope, including choices supplied through `--select` or `--selection`, and when no file changes are needed. Every later `apply`, `status`, and selector reads that choice. Cancelling or a failed apply leaves the previous choice unchanged:
 
 ```powershell
 conenv apply --select
-conenv apply --only git --yes
+conenv apply --selection selection.yaml --yes
 conenv status
 conenv config --unset-selection
 ```
@@ -401,7 +401,7 @@ components:
           - release-notes
 ```
 
-The file is an explicit allowlist: omitted components and newly added resources are not selected. At component level, `resources` covers packages, files, and checks, while `agents` selects individual agent declarations; inside an agent, `config` selects settings, `mcpServers` lists individual server names, and `skills` lists individual skill names. Interactive selections, selection files, and the saved default reconcile declared MCP servers: applying removes entries for servers declared in the profile but omitted from the selection, including when their agent or component is unchecked. The plan names removed servers, and the existing backup/undo workflow can restore them. Undeclared servers and other configuration entries are preserved. `--only` leaves other servers untouched during that invocation and saves the narrowed scope; subsequent applications of that saved scope reconcile omitted declared servers. Unselected settings, skills, files, and packages are left installed; MCP removal is specific to declared servers that are excluded from an authoritative selection. Unknown profiles, components, agents, MCP servers, skills, fields, and duplicate server or skill names are errors. Selection files use `conenv/selection/v2`; replace old agent `resources: true` with `config: true` (if settings are declared) and an explicit `mcpServers` list. The old version and agent `resources` field are rejected. The selection JSON Schema is [selection.v2.schema.json](../internal/assets/schema/selection.v2.schema.json). For short-lived automation, repeat `--only` with `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/config`, `COMPONENT/agents/AGENT/mcpServers/SERVER`, or `COMPONENT/agents/AGENT/skills/SKILL`. `--select`, `--selection`, and `--only` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
+The file is an explicit allowlist: omitted components and newly added resources are not selected. At component level, `resources` covers packages, files, and checks, while `agents` selects individual agent declarations; inside an agent, `config` selects settings, `mcpServers` lists individual server names, and `skills` lists individual skill names. Interactive selections, selection files, and the saved default reconcile declared MCP servers: applying removes entries for servers declared in the profile but omitted from the selection, including when their agent or component is unchecked. The plan names removed servers, and the existing backup/undo workflow can restore them. Undeclared servers and other configuration entries are preserved. Unselected settings, skills, files, and packages are left installed; MCP removal is specific to declared servers that are excluded from an authoritative selection. Unknown profiles, components, agents, MCP servers, skills, fields, and duplicate server or skill names are errors. Selection files use `conenv/selection/v2`; replace old agent `resources: true` with `config: true` (if settings are declared) and an explicit `mcpServers` list. The old version and agent `resources` field are rejected. The selection JSON Schema is [selection.v2.schema.json](../internal/assets/schema/selection.v2.schema.json). For automation, use a selection file with `--selection FILE`. `--select` and `--selection` are mutually exclusive. Selection is resolved before runtime prerequisites are checked, so a missing source or secret used only by an omitted resource does not block the command.
 
 Before replacing a destination, conenv stores its current contents under:
 
@@ -411,7 +411,7 @@ Before replacing a destination, conenv stores its current contents under:
 
 The active profile, managed paths, ownership, desired digests, and run history are recorded in `~/.conenv/state.json`. Secret values and rendered contents are not stored there.
 
-Use `conenv apply --undo --list` to discover recorded runs and whether their backups still exist, and `conenv apply --undo RUN_ID --dry-run` to inspect one before undoing it. Both accept `--json`.
+Use `conenv apply --undo --list` to discover recorded runs and whether their backups still exist. Add `--json` for machine-readable history. Interactive undo shows the restore plan before asking for confirmation.
 
 If a filesystem action fails, changes from that run are rolled back in reverse order. Undo a completed run with:
 
@@ -422,17 +422,18 @@ conenv apply --undo RUN_ID
 
 Undo replaces the managed destinations and rolls the recorded state metadata back, but it does not uninstall packages. Direct edits to managed destinations are treated as drift; edit the repository source instead. Conenv does not perform two-way synchronization.
 
-Add `--dry-run` to preview the exact reverse-order file operations without executing them, and `--json` for automation. New apply records include the previous managed-state snapshot, allowing undo to reinstate state metadata as well as files. Successfully installed packages are listed as retained. Non-interactive undo requires `--yes`; a dry run never does.
+Add `--json` for automation. New apply records include the previous managed-state snapshot, allowing undo to reinstate state metadata as well as files. Successfully installed packages are listed as retained. Non-interactive undo requires `--yes`.
 
 ## Command behavior
+
+Options can be interspersed with positional arguments after the subcommand, following GNU-style parsing: `conenv config DIR --check` and `conenv config --check DIR` are equivalent, as are `conenv apply --undo RUN_ID --yes` and `conenv apply --undo --yes RUN_ID`. Use `--name value` or `--name=value` for option values, and `--flag=false` to explicitly disable a boolean option. `--` ends option parsing; subsequent arguments are operands even when they begin with `-`. Unknown options are errors before or after operands. `--help` and `-h` display subcommand help unless used as an option value or placed after `--`.
 
 - `config` reports or sets the configuration repository and its scope, and `config --check` validates schema fields, inheritance, sources, secrets, skills, MCP declarations, checks, and destination ownership.
 - `config --profiles`, `--components`, `--profile-detail`, and `--component-detail` expose manifest inventory without requiring runtime prerequisites.
 - `apply` installs packages, backs up conflicts, and commits filesystem changes.
-- `apply --dry-run` emits the deterministic actions required for the selected scope.
 - `status` reports each selected component as `in_sync`, `drifted`, or `error`. Drift exits with status `3`.
 - `status --check` runs desired-state and custom health checks.
-- `apply --undo` previews or reverses the filesystem and recorded managed state of a run.
+- `apply --undo` reverses the filesystem and recorded managed state of a run, showing a plan before confirmation in an interactive terminal.
 
 `--json` output never includes rendered file contents or resolved secret values.
 When JSON is requested, stdout contains only the result document; diagnostics and prompts use stderr. In non-interactive environments, `apply` and a mutating `apply --undo` fail immediately unless `--yes` is supplied.

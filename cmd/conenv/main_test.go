@@ -260,7 +260,7 @@ func TestSelectorRestoresSavedMCPDeselection(t *testing.T) {
 	}
 }
 
-func TestDSHApplySingleMCPServerAndSave(t *testing.T) {
+func TestDSHApplySelectionRemovesExcludedServer(t *testing.T) {
 	home := registerTestEnvironment(t)
 	repository := t.TempDir()
 	writeFile(t, filepath.Join(repository, "conenv.yaml"), `schemaVersion: conenv/v2
@@ -285,44 +285,38 @@ components:
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, configPath, `- insert:
+	original := `- insert:
     - id: mcp-other
       name: "@deepseek-ai/dsh-mcp-client"
       config:
         serverName: other
         url: https://example.com/existing
-`)
-	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/dsh/mcpServers/docs", "--yes"); code != 0 {
+    - id: mcp-manual
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: manual
+        url: https://example.com/manual
+`
+	writeFile(t, configPath, original)
+	selection := testSelectionFile(t, repository, "ai-agents/agents/dsh/mcpServers/docs")
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--selection", selection, "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\n%s\n%s", code, stdout, stderr)
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "https://example.com/selected") || !strings.Contains(string(data), "https://example.com/existing") || strings.Contains(string(data), "https://example.com/unselected") {
-		t.Fatalf("single MCP apply changed other entries: %s", data)
-	}
-	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 3 {
-		t.Fatalf("saved selection must detect deselected MCP: exit = %d\n%s\n%s", code, stdout, stderr)
-	}
-	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--yes"); code != 0 {
-		t.Fatalf("saved selection apply exit = %d\n%s\n%s", code, stdout, stderr)
-	}
-	data, err = os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "https://example.com/existing") || !strings.Contains(string(data), "https://example.com/selected") {
-		t.Fatalf("deselected MCP survived: %s", data)
+	if !strings.Contains(string(data), "https://example.com/selected") || !strings.Contains(string(data), "https://example.com/manual") || strings.Contains(string(data), "https://example.com/existing") {
+		t.Fatalf("MCP selection was not reconciled: %s", data)
 	}
 	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 0 {
-		t.Fatalf("status after cleanup exit = %d\n%s\n%s", code, stdout, stderr)
+		t.Fatalf("saved selection status exit = %d\n%s\n%s", code, stdout, stderr)
 	}
 	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--undo", "--yes"); code != 0 {
 		t.Fatalf("cleanup undo exit = %d\n%s\n%s", code, stdout, stderr)
 	}
 	data, err = os.ReadFile(configPath)
-	if err != nil || !strings.Contains(string(data), "https://example.com/existing") {
+	if err != nil || string(data) != original {
 		t.Fatalf("cleanup backup was not restored: %s, %v", data, err)
 	}
 }
@@ -349,6 +343,23 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testSelectionFile(t *testing.T, repository string, targets ...string) string {
+	t.Helper()
+	resolved, err := conenv.LoadProfile(repository, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := conenv.SelectionFromTargets(resolved, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "selection.yaml")
+	if err := conenv.SaveSelection(path, spec); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // testRepository creates a configuration repository whose declarations resolve
@@ -459,7 +470,7 @@ func TestUsageListsOnlyDailyCommands(t *testing.T) {
 func TestUnknownCommandSuggestsReplacement(t *testing.T) {
 	cases := map[string]string{
 		"doctor":  "status --check",
-		"plan":    "apply --dry-run",
+		"plan":    "apply --select",
 		"restore": "apply --undo",
 		"select":  "apply --select",
 		"history": "apply --undo --list",
@@ -575,9 +586,9 @@ func TestSavedSelectionDrivesStatusAndConfig(t *testing.T) {
 	home := registerTestEnvironment(t)
 	repository := testRepository(t)
 
-	code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "shell", "--dry-run")
+	code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--selection", testSelectionFile(t, repository, "shell"), "--yes")
 	if code != 0 {
-		t.Fatalf("apply --only exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+		t.Fatalf("apply --selection exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 	selectionPath := filepath.Join(home, ".conenv", "selection.yaml")
 	if _, err := os.Stat(selectionPath); err != nil {
@@ -624,7 +635,7 @@ func TestConfigWriteRequiresSavedSelection(t *testing.T) {
 func TestApplyRejectsConflictingFlags(t *testing.T) {
 	registerTestEnvironment(t)
 	cases := [][]string{
-		{"apply", "--select", "--only", "shell", "--dry-run"},
+		{"apply", "--select", "--selection", "out.yaml"},
 		{"apply", "--undo", "--select"},
 		{"apply", "--save"},
 		{"apply", "--list"},
@@ -670,7 +681,7 @@ func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	repository := testRepository(t)
 	// Every component starts selected, so deselecting "vim" and "ai-agents"
 	// leaves only "shell".
-	code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--yes", "--dry-run")
+	code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--yes")
 	if code != 0 {
 		t.Fatalf("apply --select exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
@@ -683,7 +694,7 @@ func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	}
 
 	exported := filepath.Join(t.TempDir(), "selection.yaml")
-	if code, _, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--write", exported, "--yes", "--dry-run"); code != 0 {
+	if code, _, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--write", exported, "--yes"); code != 0 {
 		t.Fatalf("apply --select --write exit = %d\nstderr: %s", code, stderr)
 	}
 	if _, err := os.Stat(exported); err != nil {
@@ -715,11 +726,11 @@ func TestApplySelectAutomaticallyPersistsSuccessfulChoice(t *testing.T) {
 }
 
 func TestApplyPersistsSuccessButNotCancelOrFailure(t *testing.T) {
-	for _, mode := range []string{"noop", "preview", "cancel", "failure"} {
+	for _, mode := range []string{"noop", "cancel", "failure"} {
 		t.Run(mode, func(t *testing.T) {
 			home := registerTestEnvironment(t)
 			repository := testRepository(t)
-			if code, _, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "shell", "--yes"); code != 0 {
+			if code, _, stderr := runCLI(t, "", "apply", "--repo", repository, "--selection", testSelectionFile(t, repository, "shell"), "--yes"); code != 0 {
 				t.Fatal(stderr)
 			}
 			// Vim is already installed, so changing the selection can be a no-op.
@@ -733,8 +744,6 @@ func TestApplyPersistsSuccessButNotCancelOrFailure(t *testing.T) {
 			args := []string{"apply", "--repo", repository, "--select", "--yes"}
 			wantCode := 0
 			switch mode {
-			case "preview":
-				args = append(args, "--dry-run")
 			case "cancel":
 				input, wantCode = "q\n", 1
 			case "failure":
@@ -750,7 +759,7 @@ func TestApplyPersistsSuccessButNotCancelOrFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "noop" || mode == "preview" {
+			if mode == "noop" {
 				saved, err := conenv.LoadDefaultSelection()
 				if err != nil || !saved.Components["vim"].Resources || saved.Components["shell"].Resources {
 					t.Fatalf("no-op choice was not saved: %v, %v", saved, err)
@@ -762,15 +771,12 @@ func TestApplyPersistsSuccessButNotCancelOrFailure(t *testing.T) {
 	}
 }
 
-func TestApplyUndoListAndDryRun(t *testing.T) {
+func TestApplyUndoListAndMissingRun(t *testing.T) {
 	registerTestEnvironment(t)
 	if code, stdout, stderr := runCLI(t, "", "apply", "--undo", "--list"); code != 0 {
 		t.Fatalf("apply --undo --list exit = %d\nstderr: %s", code, stderr)
 	} else if !strings.Contains(stdout, "no recorded runs") {
 		t.Fatalf("unexpected listing:\n%s", stdout)
-	}
-	if code, _, stderr := runCLI(t, "", "apply", "--undo", "--dry-run"); code != 1 {
-		t.Fatalf("apply --undo --dry-run without runs exit = %d, want 1\nstderr: %s", code, stderr)
 	}
 	if code, _, stderr := runCLI(t, "", "apply", "--undo", "--yes"); code != 1 {
 		t.Fatalf("apply --undo without runs exit = %d, want 1\nstderr: %s", code, stderr)
@@ -798,15 +804,7 @@ func TestApplyUndoRestoresBackup(t *testing.T) {
 		Target: target, Backup: filepath.Join(backup, "original"), Existed: true,
 	}})
 
-	code, stdout, stderr := runCLI(t, "", "apply", "--undo", "--dry-run")
-	if code != 0 {
-		t.Fatalf("apply --undo --dry-run exit = %d\nstderr: %s", code, stderr)
-	}
-	if !strings.Contains(stdout, "run-1") || !strings.Contains(stdout, "[restore]") {
-		t.Fatalf("unexpected undo preview:\n%s", stdout)
-	}
-
-	code, stdout, stderr = runCLI(t, "", "apply", "--undo", "--yes", "--json")
+	code, stdout, stderr := runCLI(t, "", "apply", "--undo", "run-1", "--yes", "--json")
 	if code != 0 {
 		t.Fatalf("apply --undo --yes exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
@@ -883,7 +881,7 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 		t.Fatalf("pi skills dir = %s", report.Adapters[3].SkillsDir)
 	}
 
-	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex", "--yes")
+	code, stdout, stderr = runCLI(t, "", "apply", "--repo", repository, "--selection", testSelectionFile(t, repository, "ai-agents/agents/codex"), "--yes")
 	if code != 0 {
 		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
@@ -942,7 +940,7 @@ func TestAgentConfigPreservesUnmanagedKeys(t *testing.T) {
 	}
 	writeFile(t, configPath, "model = \"keep-me\"\n[mcp_servers.existing]\nurl = \"https://example.com\"\n")
 
-	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/codex/config", "--yes"); code != 0 {
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--selection", testSelectionFile(t, repository, "ai-agents/agents/codex/config"), "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 	data, err := os.ReadFile(configPath)
