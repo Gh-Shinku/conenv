@@ -51,7 +51,7 @@ conenv config [DIR] [--unset | --check | --profiles | --components
                | --profile-detail NAME | --component-detail NAME
                | --unset-selection | --write FILE]
 conenv apply  [--dry-run] [--select | --selection FILE | --only TARGET...]
-              [--save] [--write FILE] [--yes]
+              [--write FILE] [--yes]
 conenv apply  --undo [RUN_ID] [--list] [--dry-run] [--yes]
 conenv status [--check] [--select | --selection FILE | --only TARGET...]
 
@@ -71,13 +71,13 @@ Exit status `0` means success, `1` means an operational failure, `2` means inval
 Save a scope once and every later `status` or `apply` reuses it without repeating the arguments:
 
 ```powershell
-./conenv.exe apply --select --save       # pick interactively, then save the choice
-./conenv.exe apply --only git --yes --save
+./conenv.exe apply --select              # apply and automatically save the choice
+./conenv.exe apply --only git --yes
 ./conenv.exe status                      # reports the saved scope
 ./conenv.exe config --unset-selection    # back to the whole profile
 ```
 
-`--only` and `--selection` are temporary unless `--save` is given. Interactive `apply` asks whether to save the selection after the plan is confirmed. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/config`, `COMPONENT/agents/AGENT/mcpServers/SERVER`, or `COMPONENT/agents/AGENT/skills/SKILL`.
+Every successful `apply` saves its final scope as the machine default, including `--select`, `--only`, `--selection`, and a no-op. `--dry-run` saves the choice while leaving target resources unchanged. Cancellation and failure preserve the previous choice. Targets are stable resource IDs: `COMPONENT`, `COMPONENT/resources`, `COMPONENT/agents/AGENT`, `COMPONENT/agents/AGENT/config`, `COMPONENT/agents/AGENT/mcpServers/SERVER`, or `COMPONENT/agents/AGENT/skills/SKILL`.
 
 `--select` opens a keyboard-driven hierarchical checklist, so a machine can install only the programs and AI resources it needs. The checklist starts from the saved selection for the profile, or selects everything when none is saved. Agent declarations, settings, individual MCP servers, and skills can be toggled independently; a `~` mark denotes a partially selected parent. Use the arrow keys and Space to change the selection, `/` to filter, and Enter to continue. Interactive `apply` then previews the plan and lets you return to the checklist before confirming. `apply --select --write selection.yaml` exports the same choice for scripts; `--selection FILE` replays it exactly. These three selectors are mutually exclusive. `--yes` skips the preview and confirmation.
 
@@ -121,7 +121,7 @@ The [configuration guide](docs/configuration.md#agents) documents the adapter de
 ./conenv.exe apply --undo RUN_ID        # undo a specific run
 ```
 
-Undo removes destinations that `apply` created, restores the backed-up originals, and rolls back the recorded profile, managed paths, and run metadata. Installed packages are never uninstalled; they are listed as retained. Non-interactive undo requires `--yes`, and `--undo` cannot be combined with `--select`, `--only`, `--selection`, `--save`, or `--write`.
+Undo removes destinations that `apply` created, restores the backed-up originals, and rolls back the recorded profile, managed paths, and run metadata. Installed packages are never uninstalled; they are listed as retained. Non-interactive undo requires `--yes`, and `--undo` cannot be combined with `--select`, `--only`, `--selection`, or `--write`.
 
 ## Documentation
 

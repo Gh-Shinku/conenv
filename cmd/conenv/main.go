@@ -459,7 +459,7 @@ func writeSavedSelection(path string) int {
 		return fail(err, 1)
 	}
 	if saved == nil {
-		return fail(errors.New("no saved selection to write; run conenv apply --select --save first"), 2)
+		return fail(errors.New("no saved selection to write; run conenv apply --select first"), 2)
 	}
 	if err := conenv.SaveSelection(absolute, saved); err != nil {
 		return fail(err, 1)
@@ -747,7 +747,6 @@ type applyOptions struct {
 	scopeFlags
 	dryRun bool
 	yes    bool
-	save   bool
 	write  string
 	undo   bool
 	list   bool
@@ -765,9 +764,8 @@ func runApply(args []string) int {
 	var options applyOptions
 	options.repositoryFlags.register(fs)
 	options.scopeFlags.register(fs)
-	fs.BoolVar(&options.dryRun, "dry-run", false, "preview the plan without changing the machine")
+	fs.BoolVar(&options.dryRun, "dry-run", false, "preview resource changes and save the selected scope")
 	fs.BoolVar(&options.yes, "yes", false, "apply without prompting")
-	fs.BoolVar(&options.save, "save", false, "save the scope as this machine's default selection")
 	fs.StringVar(&options.write, "write", "", "write the selected scope to a selection file")
 	fs.BoolVar(&options.undo, "undo", false, "undo a recorded run instead of applying")
 	fs.BoolVar(&options.list, "list", false, "list recorded runs (requires --undo)")
@@ -791,8 +789,8 @@ func (options applyOptions) validate() error {
 		return err
 	}
 	if options.undo {
-		if options.selectComponents || len(options.only) > 0 || options.selection != "" || options.save || options.write != "" {
-			return errors.New("--undo cannot be combined with --select, --only, --selection, --save, or --write")
+		if options.selectComponents || len(options.only) > 0 || options.selection != "" || options.write != "" {
+			return errors.New("--undo cannot be combined with --select, --only, --selection, or --write")
 		}
 		return nil
 	}
@@ -852,28 +850,23 @@ func applyChanges(options applyOptions, runID string) int {
 	}
 	result := applyCommandResult{Plan: plan}
 
-	shouldSave := options.save
-	if options.selectComponents && !options.save && !options.yes && !options.dryRun && isInteractive() {
-		if confirm("Save this selection as this machine's default? [y/N] ") {
-			shouldSave = true
+	if effective == nil {
+		spec, specErr := selectionSpecFromResolved(resolved)
+		if specErr != nil {
+			return fail(fmt.Errorf("cannot derive the selected scope: %w", specErr), 2)
 		}
+		effective = spec
 	}
-	if shouldSave {
-		if effective == nil {
-			spec, specErr := selectionSpecFromResolved(resolved)
-			if specErr != nil {
-				return fail(fmt.Errorf("cannot derive the selected scope: %w", specErr), 2)
-			}
-			effective = spec
-		}
+	saveSelection := func() error {
 		path, saveErr := conenv.SaveDefaultSelection(effective)
 		if saveErr != nil {
-			return fail(saveErr, 1)
+			return fmt.Errorf("save selection: %w", saveErr)
 		}
 		result.SavedSelection = path
 		if !options.json {
 			fmt.Printf("saved selection to %s\n", path)
 		}
+		return nil
 	}
 	if options.write != "" && effective != nil {
 		absolute, writeErr := filepath.Abs(options.write)
@@ -889,6 +882,9 @@ func applyChanges(options applyOptions, runID string) int {
 	}
 
 	if options.dryRun {
+		if err := saveSelection(); err != nil {
+			return fail(err, 1)
+		}
 		if options.json {
 			if err := writeJSON(result); err != nil {
 				return fail(err, 1)
@@ -904,6 +900,9 @@ func applyChanges(options applyOptions, runID string) int {
 		}
 	}
 	if len(plan.Actions) == 0 {
+		if err := saveSelection(); err != nil {
+			return fail(err, 1)
+		}
 		if options.json {
 			if err := writeJSON(result); err != nil {
 				return fail(err, 1)
@@ -921,13 +920,16 @@ func applyChanges(options applyOptions, runID string) int {
 	}
 	run, err := conenv.Apply(plan)
 	if err != nil {
-		if len(run.Packages) > 0 {
+		if run != nil && len(run.Packages) > 0 {
 			fmt.Fprintf(os.Stderr, "packages retained after failure: %s\n", strings.Join(run.Packages, ", "))
 		}
 		return fail(err, 1)
 	}
 	result.Applied = true
 	result.Run = run
+	if err := saveSelection(); err != nil {
+		return fail(fmt.Errorf("configuration applied, but %w", err), 1)
+	}
 	if options.json {
 		if err := writeJSON(result); err != nil {
 			return fail(err, 1)
@@ -1290,7 +1292,7 @@ Usage:
                  | --profile-detail NAME | --component-detail NAME
                  | --unset-selection | --write FILE]
   conenv apply  [--dry-run] [--select | --selection FILE | --only TARGET...]
-                [--save] [--write FILE] [--yes]
+                [--write FILE] [--yes]
   conenv apply  --undo [RUN_ID] [--list] [--dry-run] [--yes]
   conenv status [--check] [--select | --selection FILE | --only TARGET...]
 
@@ -1299,9 +1301,9 @@ Common flags: [--repo DIR] [--profile NAME] [--json]
 Scopes:
   A command uses the scope given on the command line. Otherwise it uses the
   selection saved in ~/.conenv/selection.yaml, and falls back to the whole
-  profile resolved from the configuration repository. Save a scope with
-  "conenv apply --select --save" or "conenv apply --only TARGET --yes --save",
-  and clear it with "conenv config --unset-selection".
+  profile resolved from the configuration repository. Every successful apply
+  saves its final scope, including --dry-run; failure or cancellation leaves
+  the saved scope unchanged. Clear it with "conenv config --unset-selection".
 
 Exit status:
   0 success, 1 operational failure, 2 invalid input or configuration,

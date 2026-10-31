@@ -292,7 +292,7 @@ components:
         serverName: other
         url: https://example.com/existing
 `)
-	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/dsh/mcpServers/docs", "--yes", "--save"); code != 0 {
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "ai-agents/agents/dsh/mcpServers/docs", "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\n%s\n%s", code, stdout, stderr)
 	}
 	data, err := os.ReadFile(configPath)
@@ -575,9 +575,9 @@ func TestSavedSelectionDrivesStatusAndConfig(t *testing.T) {
 	home := registerTestEnvironment(t)
 	repository := testRepository(t)
 
-	code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "shell", "--dry-run", "--save")
+	code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "shell", "--dry-run")
 	if code != 0 {
-		t.Fatalf("apply --only --save exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+		t.Fatalf("apply --only exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 	selectionPath := filepath.Join(home, ".conenv", "selection.yaml")
 	if _, err := os.Stat(selectionPath); err != nil {
@@ -626,7 +626,7 @@ func TestApplyRejectsConflictingFlags(t *testing.T) {
 	cases := [][]string{
 		{"apply", "--select", "--only", "shell", "--dry-run"},
 		{"apply", "--undo", "--select"},
-		{"apply", "--undo", "--save"},
+		{"apply", "--save"},
 		{"apply", "--list"},
 		{"apply", "--write", "out.yaml"},
 		{"status", "--repo", "a", "--root", "b"},
@@ -670,7 +670,7 @@ func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	repository := testRepository(t)
 	// Every component starts selected, so deselecting "vim" and "ai-agents"
 	// leaves only "shell".
-	code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--save", "--yes", "--dry-run")
+	code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--yes", "--dry-run")
 	if code != 0 {
 		t.Fatalf("apply --select exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
@@ -688,6 +688,77 @@ func TestApplySelectSavesScopeInLineMode(t *testing.T) {
 	}
 	if _, err := os.Stat(exported); err != nil {
 		t.Fatalf("exported selection missing: %v", err)
+	}
+}
+
+func TestApplySelectAutomaticallyPersistsSuccessfulChoice(t *testing.T) {
+	home := registerTestEnvironment(t)
+	repository := testRepository(t)
+	// The saved choice starts at shell. Select vim, then reopen without changes.
+	if code, stdout, stderr := runCLI(t, "n\n1\n\n", "apply", "--repo", repository, "--select", "--yes", "--json"); code != 0 {
+		t.Fatalf("first apply exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runCLI(t, "n\n2\n\n", "apply", "--repo", repository, "--select", "--yes", "--json"); code != 0 {
+		t.Fatalf("changed choice exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	code, stdout, stderr := runCLI(t, "\n", "apply", "--repo", repository, "--select", "--yes", "--json")
+	if code != 0 || !strings.Contains(stderr, "[x] 2. vim") || !strings.Contains(stderr, "[ ] 1. shell") {
+		t.Fatalf("reopened choice exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	var result applyCommandResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.SavedSelection != filepath.Join(home, ".conenv", "selection.yaml") || len(result.Plan.Actions) != 0 {
+		t.Fatalf("no-op apply did not preserve the choice: %#v", result)
+	}
+}
+
+func TestApplyPersistsSuccessButNotCancelOrFailure(t *testing.T) {
+	for _, mode := range []string{"noop", "preview", "cancel", "failure"} {
+		t.Run(mode, func(t *testing.T) {
+			home := registerTestEnvironment(t)
+			repository := testRepository(t)
+			if code, _, stderr := runCLI(t, "", "apply", "--repo", repository, "--only", "shell", "--yes"); code != 0 {
+				t.Fatal(stderr)
+			}
+			// Vim is already installed, so changing the selection can be a no-op.
+			writeFile(t, filepath.Join(home, "vim"), "vim\n")
+			path := filepath.Join(home, ".conenv", "selection.yaml")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := "n\n2\n\n"
+			args := []string{"apply", "--repo", repository, "--select", "--yes"}
+			wantCode := 0
+			switch mode {
+			case "preview":
+				args = append(args, "--dry-run")
+			case "cancel":
+				input, wantCode = "q\n", 1
+			case "failure":
+				// Planning succeeds, but applying cannot read the malformed state.
+				writeFile(t, filepath.Join(home, "vim"), "drift\n")
+				writeFile(t, filepath.Join(home, ".conenv", "state.json"), "invalid json")
+				wantCode = 1
+			}
+			if code, stdout, stderr := runCLI(t, input, args...); code != wantCode {
+				t.Fatalf("exit = %d, want %d\n%s\n%s", code, wantCode, stdout, stderr)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "noop" || mode == "preview" {
+				saved, err := conenv.LoadDefaultSelection()
+				if err != nil || !saved.Components["vim"].Resources || saved.Components["shell"].Resources {
+					t.Fatalf("no-op choice was not saved: %v, %v", saved, err)
+				}
+			} else if !bytes.Equal(before, after) {
+				t.Fatalf("%s changed the saved choice", mode)
+			}
+		})
 	}
 }
 
@@ -837,9 +908,8 @@ func TestAgentLifecycleAppliesAndUndoesGlobalPaths(t *testing.T) {
 		t.Fatal("skills must not be linked into the harness private directory")
 	}
 
-	// `--only` is temporary, so status has to select the same target to inspect
-	// the scope that apply actually changed.
-	code, stdout, stderr = runCLI(t, "", "status", "--repo", repository, "--only", "ai-agents/agents/codex", "--json")
+	// Apply saved its scope, so status needs no repeated selector.
+	code, stdout, stderr = runCLI(t, "", "status", "--repo", repository, "--json")
 	if code != 0 {
 		t.Fatalf("status exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
