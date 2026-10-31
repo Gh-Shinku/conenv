@@ -72,6 +72,13 @@ func chooseComponentsLineMode(input io.Reader, output io.Writer, resolved *conen
 	if err != nil {
 		return err
 	}
+	initial, err := initialSelectionIDs(resolved)
+	if err != nil {
+		return err
+	}
+	if initial != nil {
+		tree.SetSelectedIDs(initial)
+	}
 	reader := bufio.NewReader(input)
 	for {
 		fmt.Fprintf(output, "\nSelect items for profile %q:\n", resolved.Profile)
@@ -156,9 +163,14 @@ func canPrompt(input io.Reader) bool {
 // presentation-only models exposed by internal/tui.
 func runComponentTUI(input io.Reader, output io.Writer, resolved *conenv.Resolved, preview bool) (tui.Result, error) {
 	catalog := newSelectionCatalog(resolved)
+	initial, err := initialSelectionIDs(resolved)
+	if err != nil {
+		return tui.Result{}, err
+	}
 	config := tui.Config{
 		Profile:      resolved.Profile,
 		Items:        catalog.items,
+		SelectedIDs:  initial,
 		Preview:      preview,
 		ConfirmLabel: "apply",
 	}
@@ -221,7 +233,32 @@ func filteredResolved(resolved *conenv.Resolved, selectedIDs []string) (*conenv.
 	if err != nil {
 		return nil, err
 	}
-	return conenv.ApplySelection(resolved, spec)
+	selected, err := conenv.ApplySelection(resolved, spec)
+	if err != nil {
+		return nil, err
+	}
+	conenv.ReconcileMCPSelection(resolved, selected)
+	return selected, nil
+}
+
+func initialSelectionIDs(resolved *conenv.Resolved) ([]string, error) {
+	saved, err := conenv.LoadDefaultSelection()
+	if err != nil || saved == nil || saved.Profile != resolved.Profile {
+		return nil, err
+	}
+	selected, err := conenv.ApplySelection(resolved, saved)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := tui.NewTree(newSelectionCatalog(selected).items)
+	if err != nil {
+		return nil, err
+	}
+	ids := tree.SelectedIDs()
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids, nil
 }
 
 func filterComponents(resolved *conenv.Resolved, selectedIDs []string) error {

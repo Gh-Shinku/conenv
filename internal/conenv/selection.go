@@ -339,6 +339,59 @@ func HasComponentResources(component Component) bool {
 	return false
 }
 
+// ReconcileMCPSelection removes declared servers omitted from an authoritative
+// selection. Temporary --only scopes use ApplySelection alone and leave others
+// untouched. Servers selected by another component for the same agent survive.
+func ReconcileMCPSelection(full, selected *Resolved) {
+	kept := map[string]map[string]bool{}
+	indices := map[string]int{}
+	for i, component := range selected.Components {
+		indices[component.Name] = i
+		for name, agent := range component.Agents {
+			if kept[name] == nil {
+				kept[name] = map[string]bool{}
+			}
+			for server := range agent.MCPServers {
+				kept[name][server] = true
+			}
+		}
+	}
+	for _, component := range full.Components {
+		for _, name := range agentNames(component.Component) {
+			agent := component.Agents[name]
+			var removed []string
+			for _, server := range sortedKeys(agent.MCPServers) {
+				if !kept[name][server] {
+					removed = append(removed, server)
+				}
+			}
+			if len(removed) == 0 {
+				continue
+			}
+			i, ok := indices[component.Name]
+			if !ok {
+				i = len(selected.Components)
+				indices[component.Name] = i
+				selected.Components = append(selected.Components, NamedComponent{Name: component.Name})
+			}
+			target := &selected.Components[i]
+			// Copy the map so reconciliation never mutates a source scope.
+			agents := map[string]Agent{}
+			for key, value := range target.Agents {
+				agents[key] = value
+			}
+			narrowed, exists := agents[name]
+			if !exists {
+				narrowed = agent
+				narrowed.Config, narrowed.MCPServers, narrowed.Skills = nil, nil, nil
+			}
+			narrowed.removeMCP = removed
+			agents[name] = narrowed
+			target.Agents = agents
+		}
+	}
+}
+
 func validateSelectionShape(spec *SelectionSpec) error {
 	if spec == nil {
 		return errors.New("selection is required")

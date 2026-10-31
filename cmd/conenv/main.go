@@ -206,6 +206,7 @@ func loadScope(repository string, flags scopeFlags, profile string, deferRuntime
 			return nil, "", err
 		}
 		narrowed.SelectionSource = string(scopeFile)
+		conenv.ReconcileMCPSelection(resolved, narrowed)
 		return narrowed, scopeFile, nil
 	case len(flags.only) > 0:
 		spec, err := conenv.SelectionFromTargets(resolved, flags.only)
@@ -225,6 +226,7 @@ func loadScope(repository string, flags scopeFlags, profile string, deferRuntime
 			return nil, "", fmt.Errorf("saved selection: %w", err)
 		}
 		narrowed.SelectionSource = string(scopeSaved)
+		conenv.ReconcileMCPSelection(resolved, narrowed)
 		return narrowed, scopeSaved, nil
 	}
 	resolved.SelectionSource = string(scopeDefault)
@@ -858,7 +860,7 @@ func applyChanges(options applyOptions, runID string) int {
 	}
 	if shouldSave {
 		if effective == nil {
-			spec, specErr := conenv.SelectionFromTargets(resolved, resolvedComponentNames(resolved))
+			spec, specErr := selectionSpecFromResolved(resolved)
 			if specErr != nil {
 				return fail(fmt.Errorf("cannot derive the selected scope: %w", specErr), 2)
 			}
@@ -1065,6 +1067,15 @@ func runStatus(args []string) int {
 	resolved, origin, err := loadScope(options.repository(), options.scopeFlags, options.profile, true)
 	if err != nil {
 		return fail(err, 2)
+	}
+	if options.selectComponents {
+		output := io.Writer(os.Stdout)
+		if options.json {
+			output = os.Stderr
+		}
+		if err := chooseComponents(stdin, output, resolved); err != nil {
+			return failSelection(err)
+		}
 	}
 	report := conenv.InspectStatus(resolved)
 	report.SelectionSource = scopeSourceLabel(origin)

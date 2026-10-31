@@ -35,6 +35,7 @@ func testAgent(harness string, config map[string]any, mcp map[string]conenv.MCP,
 }
 
 func TestChooseComponentsGroupsAndFilters(t *testing.T) {
+	registerTestEnvironment(t)
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
 		{Name: "skills", Component: conenv.Component{Category: "ai", Description: "Shared skills", Agents: testAgent("codex", nil, nil)}},
 		{Name: "shell", Component: conenv.Component{Category: "program", Description: "Shell config", Files: []conenv.ManagedFile{{Source: "shell", Target: "/shell", Mode: "link"}}}},
@@ -85,6 +86,7 @@ func TestFilteredResolvedPreservesManifestOrder(t *testing.T) {
 }
 
 func TestChooseComponentsAllowsIndividualSkill(t *testing.T) {
+	registerTestEnvironment(t)
 	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{
 		{Name: "codex-skills", Component: conenv.Component{Category: "ai", Agents: testAgent("codex", nil, nil,
 			conenv.Skill{Name: "project-bootstrap", Source: "project"},
@@ -221,8 +223,40 @@ func TestTUISelectsAndExportsIndividualMCPServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	conenv.ReconcileMCPSelection(resolved, replayed)
 	if !reflect.DeepEqual(narrowed.Components, replayed.Components) {
 		t.Fatal("exported selection changed the scope")
+	}
+}
+
+func TestSelectorRestoresSavedMCPDeselection(t *testing.T) {
+	registerTestEnvironment(t)
+	resolved := &conenv.Resolved{Profile: "personal", Components: []conenv.NamedComponent{{
+		Name: "ai-agents", Component: conenv.Component{Agents: testAgent("dsh", nil,
+			map[string]conenv.MCP{"rea": {Type: "stdio", Command: "rea"}},
+			conenv.Skill{Name: "pdf-reading", Source: "pdf-reading"},
+		)},
+	}}}
+	saved, err := conenv.SelectionFromTargets(resolved, []string{"ai-agents/agents/dsh/skills/pdf-reading"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conenv.SaveDefaultSelection(saved); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := initialSelectionIDs(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []string{"component:ai-agents:agent:dsh:skill:pdf-reading"}) {
+		t.Fatalf("saved selection = %v", ids)
+	}
+	var output bytes.Buffer
+	if err := chooseComponentsLineMode(strings.NewReader("\n"), &output, resolved); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "[ ] 3. rea") || len(resolved.Components[0].Agents["dsh"].MCPServers) != 0 {
+		t.Fatalf("deselected server was checked again: %s", output.String())
 	}
 }
 
@@ -251,8 +285,7 @@ components:
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, configPath, `- id: insert
-  rows:
+	writeFile(t, configPath, `- insert:
     - id: mcp-other
       name: "@deepseek-ai/dsh-mcp-client"
       config:
@@ -269,8 +302,28 @@ components:
 	if !strings.Contains(string(data), "https://example.com/selected") || !strings.Contains(string(data), "https://example.com/existing") || strings.Contains(string(data), "https://example.com/unselected") {
 		t.Fatalf("single MCP apply changed other entries: %s", data)
 	}
+	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 3 {
+		t.Fatalf("saved selection must detect deselected MCP: exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--yes"); code != 0 {
+		t.Fatalf("saved selection apply exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "https://example.com/existing") || !strings.Contains(string(data), "https://example.com/selected") {
+		t.Fatalf("deselected MCP survived: %s", data)
+	}
 	if code, stdout, stderr := runCLI(t, "", "status", "--repo", repository, "--json"); code != 0 {
-		t.Fatalf("saved selection status exit = %d\n%s\n%s", code, stdout, stderr)
+		t.Fatalf("status after cleanup exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runCLI(t, "", "apply", "--repo", repository, "--undo", "--yes"); code != 0 {
+		t.Fatalf("cleanup undo exit = %d\n%s\n%s", code, stdout, stderr)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil || !strings.Contains(string(data), "https://example.com/existing") {
+		t.Fatalf("cleanup backup was not restored: %s, %v", data, err)
 	}
 }
 

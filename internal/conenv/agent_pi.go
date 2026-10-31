@@ -75,6 +75,10 @@ func (piAdapter) Serialize(doc any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
+func (piAdapter) RemoveMCP(doc any, names []string) (any, error) {
+	return removeMCPMap(doc, "mcpServers", names)
+}
+
 // mergedPiMCPServers expands the declared servers and merges them into the
 // servers already present, so unknown keys on an existing entry are retained.
 // Pi infers the transport from the keys themselves, so the keys of the other

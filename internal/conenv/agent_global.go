@@ -41,6 +41,8 @@ func (globalAdapter) Merge(any, map[string]any, map[string]MCP, []Skill, *Resolv
 
 func (globalAdapter) Serialize(any) ([]byte, error) { return nil, errGlobalSkillsOnly() }
 
+func (globalAdapter) RemoveMCP(any, []string) (any, error) { return nil, errGlobalSkillsOnly() }
+
 // errGlobalSkillsOnly fails loudly if a declaration bypasses validation, instead
 // of writing a configuration file that no harness reads.
 func errGlobalSkillsOnly() error {

@@ -33,6 +33,7 @@ type PlanBuilder func(selectedIDs []string) (Plan, error)
 type Config struct {
 	Profile      string
 	Items        []Item
+	SelectedIDs  []string // nil selects all; an empty slice selects none.
 	Preview      bool
 	BuildPlan    PlanBuilder
 	ConfirmLabel string

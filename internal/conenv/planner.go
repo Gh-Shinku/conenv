@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 )
 
 func BuildPlan(r *Resolved) (*Plan, error) {
@@ -115,7 +116,7 @@ func BuildPlan(r *Resolved) (*Plan, error) {
 		}
 	}
 	for _, entry := range agents {
-		if !entry.agent.ManagesConfig() {
+		if !entry.managesConfig() {
 			continue
 		}
 		content, err := desiredAgentConfig(entry)
@@ -133,10 +134,14 @@ func BuildPlan(r *Resolved) (*Plan, error) {
 		if equal {
 			continue
 		}
+		summary := fmt.Sprintf("merge %s config into %s", entry.agent.Harness, entry.configPath)
+		if len(entry.removeMCP) > 0 {
+			summary += " (remove MCP servers: " + strings.Join(entry.removeMCP, ", ") + ")"
+		}
 		plan.Actions = append(plan.Actions, Action{
 			Kind: "agent_config", Component: entry.agent.Name, Target: entry.configPath,
 			Content: content, Sensitive: true,
-			Summary: fmt.Sprintf("merge %s config into %s", entry.agent.Harness, entry.configPath),
+			Summary: summary,
 		})
 	}
 	return plan, nil
@@ -154,6 +159,11 @@ type agentEntry struct {
 	skills       []Skill
 	skillSources map[string]string
 	components   []string
+	removeMCP    []string
+}
+
+func (entry agentEntry) managesConfig() bool {
+	return len(entry.config) > 0 || len(entry.mcp) > 0 || len(entry.removeMCP) > 0
 }
 
 // collectAgents groups the declared agents by name and resolves their global
@@ -197,6 +207,7 @@ func collectAgents(r *Resolved) ([]agentEntry, error) {
 				return nil, fmt.Errorf("agent %q is declared with harnesses %q and %q", agentName, entry.agent.Harness, agent.Harness)
 			}
 			key := agentName + "\x00" + component.Name
+			entry.removeMCP = append(entry.removeMCP, agent.removeMCP...)
 			for _, name := range sortedKeys(agent.Config) {
 				existing, exists := entry.config[name]
 				if !exists {
@@ -250,7 +261,7 @@ func collectAgents(r *Resolved) ([]agentEntry, error) {
 // desiredAgentConfig renders the configuration file for one agent. A nil
 // result means the agent declares nothing that belongs in that file.
 func desiredAgentConfig(entry agentEntry) ([]byte, error) {
-	if !entry.agent.ManagesConfig() {
+	if !entry.managesConfig() {
 		return nil, nil
 	}
 	adapter, err := LookupAdapter(entry.agent.Harness)
@@ -266,6 +277,8 @@ func desiredAgentConfig(entry agentEntry) ([]byte, error) {
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
+	} else if len(entry.config) == 0 && len(entry.mcp) == 0 {
+		return nil, nil
 	}
 	config, err := expandMap(entry.config, entry.resolved)
 	if err != nil {
@@ -274,6 +287,12 @@ func desiredAgentConfig(entry agentEntry) ([]byte, error) {
 	merged, err := adapter.Merge(document, config, entry.mcp, entry.skills, entry.resolved)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s: %w", entry.agent.Name, err)
+	}
+	if len(entry.removeMCP) > 0 {
+		merged, err = adapter.RemoveMCP(merged, entry.removeMCP)
+		if err != nil {
+			return nil, fmt.Errorf("agent %s: %w", entry.agent.Name, err)
+		}
 	}
 	return adapter.Serialize(merged)
 }

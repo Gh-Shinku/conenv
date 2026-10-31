@@ -30,7 +30,7 @@
       "additionalProperties": false,
       "properties": {
         "config": { "type": "boolean", "description": "Select declared agent settings." },
-        "mcpServers": { "$ref": "#/$defs/names" },
+        "mcpServers": { "$ref": "#/$defs/names", "description": "Select these declared servers. Applying a selection removes declared servers omitted here; undeclared servers are preserved." },
         "skills": { "$ref": "#/$defs/names" }
       }
     }

@@ -107,6 +107,26 @@ func (codexAdapter) Serialize(doc any) ([]byte, error) {
 	return data, nil
 }
 
+func (codexAdapter) RemoveMCP(doc any, names []string) (any, error) {
+	return removeMCPMap(doc, "mcp_servers", names)
+}
+
+func removeMCPMap(doc any, key string, names []string) (any, error) {
+	root, ok := doc.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("MCP configuration has unexpected type %T", doc)
+	}
+	merged := cloneConfigMap(root)
+	if existing, ok := root[key].(map[string]any); ok {
+		servers := cloneConfigMap(existing)
+		for _, name := range names {
+			delete(servers, name)
+		}
+		merged[key] = servers
+	}
+	return merged, nil
+}
+
 // mergedMCPServers expands the declared servers and merges them into the
 // servers already present, so unknown keys on an existing entry are retained.
 func mergedMCPServers(root map[string]any, mcp map[string]MCP, r *Resolved) (map[string]any, error) {

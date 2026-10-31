@@ -145,6 +145,33 @@ type dshEntryRef struct {
 	topLevel bool
 }
 
+func (dshAdapter) RemoveMCP(doc any, names []string) (any, error) {
+	root, err := dshPatchDocument(doc)
+	if err != nil {
+		return nil, err
+	}
+	sequence := root.Content[0]
+	for _, name := range names {
+		ref, found, err := findDSHMCPEntry(sequence, name)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		if ref.topLevel {
+			sequence.Content = withoutDSHEntries(sequence.Content, []*yaml.Node{ref.entry})
+			continue
+		}
+		for _, entry := range sequence.Content {
+			if insert := mappingValue(entry, "insert"); insert != nil && insert.Kind == yaml.SequenceNode {
+				insert.Content = withoutDSHEntries(insert.Content, []*yaml.Node{ref.entry})
+			}
+		}
+	}
+	return root, nil
+}
+
 // dshInsertPatch wraps rows in the insert patch that adds plugin rows from a
 // patch layer. DSH reads a patch entry as a row to override; new rows have to
 // arrive inside `insert`.

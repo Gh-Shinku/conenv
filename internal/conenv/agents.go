@@ -25,6 +25,8 @@ type AgentAdapter interface {
 	// Merge applies the collected settings to a parsed document and returns the
 	// document that should be written back.
 	Merge(doc any, config map[string]any, mcp map[string]MCP, skills []Skill, r *Resolved) (any, error)
+	// RemoveMCP removes only the named server entries and preserves other data.
+	RemoveMCP(doc any, names []string) (any, error)
 	Serialize(doc any) ([]byte, error)
 	// Validate rejects declared keys that this harness does not manage.
 	Validate(config map[string]any) error
@@ -43,6 +45,7 @@ type Agent struct {
 	Config     map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
 	MCPServers map[string]MCP `yaml:"mcpServers,omitempty" json:"mcpServers,omitempty"`
 	Skills     []Skill        `yaml:"skills,omitempty" json:"skills,omitempty"`
+	removeMCP  []string
 }
 
 // namedAgents copies the map key of a declared agent into the value so later
@@ -66,7 +69,7 @@ func validAgentName(name string) bool {
 // ManagesConfig reports whether the agent declares settings that are written
 // into the harness configuration file.
 func (a Agent) ManagesConfig() bool {
-	return len(a.Config) > 0 || len(a.MCPServers) > 0
+	return len(a.Config) > 0 || len(a.MCPServers) > 0 || len(a.removeMCP) > 0
 }
 
 // ManagesAnything reports whether the agent contributes anything a machine has

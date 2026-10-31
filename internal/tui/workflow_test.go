@@ -16,6 +16,19 @@ func testItems() []Item {
 	}
 }
 
+func TestWorkflowStartsWithSavedSelection(t *testing.T) {
+	model, err := newWorkflow(Config{Items: testItems(), SelectedIDs: []string{"skills/project"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := model.selector.selectedIDs(); !reflect.DeepEqual(got, []string{"skills/project"}) {
+		t.Fatalf("initial selection = %v", got)
+	}
+	if model.selector.tree.State("skills") != PartiallySelected || model.selector.tree.State("skills/creator") != Unselected {
+		t.Fatal("saved partial selection was not restored")
+	}
+}
+
 func TestSelectorDefaultsToAllAndSupportsFiltering(t *testing.T) {
 	selector, err := newSelector(testItems())
 	if err != nil {

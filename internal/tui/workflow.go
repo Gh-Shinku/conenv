@@ -44,6 +44,9 @@ func newWorkflow(config Config) (workflowModel, error) {
 	if err != nil {
 		return workflowModel{}, err
 	}
+	if config.SelectedIDs != nil {
+		selector.tree.SetSelectedIDs(config.SelectedIDs)
+	}
 	return workflowModel{
 		config:   config,
 		selector: selector,

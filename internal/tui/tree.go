@@ -70,6 +70,15 @@ func (t *Tree) Clear() {
 	clear(t.selected)
 }
 
+func (t *Tree) SetSelectedIDs(ids []string) {
+	t.Clear()
+	for _, id := range ids {
+		for _, leaf := range t.leafIDs(id) {
+			t.selected[leaf] = true
+		}
+	}
+}
+
 func (t *Tree) Toggle(id string) {
 	leaves := t.leafIDs(id)
 	allSelected := len(leaves) > 0
