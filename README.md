@@ -6,7 +6,9 @@ The CLI and configuration repository are deliberately independent. Windows is th
 
 ## Install
 
-Install with Go 1.27 or newer:
+Download the archive for your OS and CPU from [GitHub Releases](https://github.com/Gh-Shinku/conenv/releases). Builds are available for Windows (`.zip`), Linux (`.tar.gz`), and macOS (`darwin`, `.tar.gz`), each for x86-64 (`amd64`) and ARM64 (`arm64`, including Apple silicon). Extract `conenv.exe` or `conenv` to a directory on your `PATH`. Each release includes a `SHA256SUMS` file for verifying the archives.
+
+To install from the source checkout, use Go 1.27.1 or newer:
 
 ```powershell
 go install ./cmd/conenv
